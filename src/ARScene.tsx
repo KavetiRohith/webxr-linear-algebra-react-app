@@ -337,8 +337,6 @@ const MathLine = ({
         color="white"
         anchorX="center"
         anchorY="bottom"
-        backgroundColor={isSelected ? "#00000080" : undefined}
-        padding={0.01}
       >
         {useLinePlaneStore.getState().objects.find((obj) => obj.id === id)
           ?.equation || ""}
@@ -410,8 +408,6 @@ const MathPlane = ({
         color="white"
         anchorX="center"
         anchorY="bottom"
-        backgroundColor={isSelected ? "#00000080" : undefined}
-        padding={0.01}
       >
         {useLinePlaneStore.getState().objects.find((obj) => obj.id === id)
           ?.equation || ""}
