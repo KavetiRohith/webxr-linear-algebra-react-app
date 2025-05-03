@@ -1,13 +1,24 @@
 import { useRef, useEffect, useMemo } from "react";
 import { Text, Line } from "@react-three/drei";
 import { Interactive } from "@react-three/xr";
-import { Vector3, Euler, Quaternion, Mesh } from "three";
+import {
+  Vector3,
+  Euler,
+  Quaternion,
+  Mesh,
+  Plane as ThreePlane,
+  Line3,
+} from "three";
 import { create } from "zustand";
 import { generateUUID } from "three/src/math/MathUtils.js";
 
-// Store, helpers, Equation Params, transform functions - remain the same as the previous version
-// ... (Keep the Zustand store definition, defaults, getLineTransform, getPlaneTransform from the previous correct version) ...
-// Definition repeated here for completeness, ensure it matches the PREVIOUS correct version
+const EPSILON = 1e-6;
+// Using squared epsilon for distance checks
+const SQ_EPSILON = EPSILON * EPSILON;
+
+/*************************
+ * 1. Zustand Store & Helpers
+ *************************/
 interface MathObject {
   id: string;
   type: "line" | "plane";
@@ -40,7 +51,7 @@ interface LinePlaneStoreState {
   updateObjectPosition: (id: string, position: Vector3) => void;
   updateEquation: (id: string) => void;
   selectObject: (id: string | null) => void;
-  clearAll: () => void; // Added clearAll
+  clearAll: () => void;
   mode: "random" | "equation";
   equationType: "line" | "plane";
   lineParams: LineEqParams;
@@ -51,6 +62,7 @@ interface LinePlaneStoreState {
   setPlaneParam: (param: keyof PlaneEqParams, value: number) => void;
   spawnFromEquation: () => void;
 }
+
 const defaultLineParams: LineEqParams = {
   pX: 0,
   pY: 1,
@@ -59,37 +71,40 @@ const defaultLineParams: LineEqParams = {
   dY: 0,
   dZ: 0,
 };
+
 const defaultPlaneParams: PlaneEqParams = { nX: 0, nY: 1, nZ: 0, d: -1 };
+
 const getLineTransform = (
   params: LineEqParams
 ): { position: Vector3; rotation: Euler } => {
   const position = new Vector3(params.pX, params.pY, params.pZ);
   const direction = new Vector3(params.dX, params.dY, params.dZ);
-  if (direction.lengthSq() < 0.0001) direction.set(1, 0, 0);
+  if (direction.lengthSq() < SQ_EPSILON) direction.set(1, 0, 0); // Prevent zero vector
   direction.normalize();
   const quaternion = new Quaternion().setFromUnitVectors(
     new Vector3(1, 0, 0),
     direction
-  );
-  const rotation = new Euler().setFromQuaternion(quaternion);
-  return { position, rotation };
-};
-const getPlaneTransform = (
-  params: PlaneEqParams
-): { position: Vector3; rotation: Euler } => {
-  const normal = new Vector3(params.nX, params.nY, params.nZ);
-  if (normal.lengthSq() < 0.0001) normal.set(0, 1, 0);
-  normal.normalize();
-  const position = normal.clone().multiplyScalar(-params.d);
-  const quaternion = new Quaternion().setFromUnitVectors(
-    new Vector3(0, 0, 1),
-    normal
-  );
+  ); // Line mesh along X
   const rotation = new Euler().setFromQuaternion(quaternion);
   return { position, rotation };
 };
 
-// Zustand store implementation (ensure actions match the previous correct version where interaction was copied)
+const getPlaneTransform = (
+  params: PlaneEqParams
+): { position: Vector3; rotation: Euler } => {
+  const normal = new Vector3(params.nX, params.nY, params.nZ);
+  if (normal.lengthSq() < SQ_EPSILON) normal.set(0, 1, 0); // Prevent zero vector
+  normal.normalize();
+  const position = normal.clone().multiplyScalar(-params.d); // P = -d * N
+  const quaternion = new Quaternion().setFromUnitVectors(
+    new Vector3(0, 0, 1),
+    normal
+  ); // Plane mesh normal along Z
+  const rotation = new Euler().setFromQuaternion(quaternion);
+  return { position, rotation };
+};
+
+// Zustand store implementation
 export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
   objects: [],
   selectedObjectId: null,
@@ -98,7 +113,6 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
   lineParams: { ...defaultLineParams },
   planeParams: { ...defaultPlaneParams },
 
-  // --- Original Actions (copied again for certainty) ---
   addLine: (position?: Vector3, rotation?: Euler) => {
     if (!position) {
       position = new Vector3(
@@ -130,6 +144,7 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
     }));
     get().updateEquation(id);
   },
+
   addPlane: (position?: Vector3, rotation?: Euler) => {
     if (!position) {
       position = new Vector3(
@@ -155,12 +170,14 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       equation: "",
       visible: true,
     };
+
     set((state) => ({
       objects: [...state.objects, plane],
       selectedObjectId: id,
     }));
     get().updateEquation(id);
   },
+
   removeObject: (id) => {
     set((state) => ({
       objects: state.objects.filter((obj) => obj.id !== id),
@@ -168,14 +185,16 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
         state.selectedObjectId === id ? null : state.selectedObjectId,
     }));
   },
+
   updateObjectPosition: (id, position) => {
     set((state) => ({
       objects: state.objects.map((obj) =>
         obj.id === id ? { ...obj, position: position.clone() } : obj
       ),
     }));
-    get().updateEquation(id); // Call equation update after position update
+    get().updateEquation(id);
   },
+
   updateEquation: (id) => {
     const object = get().objects.find((obj) => obj.id === id);
     if (!object) return;
@@ -184,7 +203,8 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       const direction = new Vector3(1, 0, 0)
         .applyEuler(object.rotation)
         .normalize();
-      equation = `P = (${object.position.x.toFixed(1)}, ${object.position.y.toFixed(1)}, ${object.position.z.toFixed(1)}) + t(${direction.x.toFixed(1)}, ${direction.y.toFixed(1)}, ${direction.z.toFixed(1)})`;
+      const p0 = object.position;
+      equation = `P = (${p0.x.toFixed(1)}, ${p0.y.toFixed(1)}, ${p0.z.toFixed(1)}) + t(${direction.x.toFixed(1)}, ${direction.y.toFixed(1)}, ${direction.z.toFixed(1)})`;
     } else {
       const normal = new Vector3(0, 0, 1)
         .applyEuler(object.rotation)
@@ -215,18 +235,23 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       ),
     }));
   },
+
   selectObject: (id) => {
-    console.log("Selecting object:", id); // Add log for debugging
     set({ selectedObjectId: id });
   },
-  clearAll: () => set({ objects: [], selectedObjectId: null }), // Add clearAll back
-  // --- Equation Mode Actions ---
+
+  clearAll: () => set({ objects: [], selectedObjectId: null }),
+
   setMode: (mode) => set({ mode }),
+
   setEquationType: (type) => set({ equationType: type }),
+
   setLineParam: (param, value) =>
     set((s) => ({ lineParams: { ...s.lineParams, [param]: value } })),
+
   setPlaneParam: (param, value) =>
     set((s) => ({ planeParams: { ...s.planeParams, [param]: value } })),
+
   spawnFromEquation: () => {
     const { equationType, lineParams, planeParams, addLine, addPlane } = get();
     if (equationType === "line") {
@@ -240,58 +265,300 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
 }));
 
 /*************************
- * 2.  Scene Helpers & Components
+ * Intersection Math Helpers
  *************************/
+const getLineParams = (
+  lineObj: MathObject
+): { point: Vector3; dir: Vector3 } | null => {
+  if (lineObj.type !== "line") return null;
+  const point = lineObj.position.clone();
+  const dir = new Vector3(1, 0, 0).applyEuler(lineObj.rotation).normalize();
+  return { point, dir };
+};
+const getPlaneParams = (
+  planeObj: MathObject
+): { normal: Vector3; d: number } | null => {
+  if (planeObj.type !== "plane") return null;
+  const normal = new Vector3(0, 0, 1).applyEuler(planeObj.rotation).normalize();
+  const d = -normal.dot(planeObj.position); // ax + by + cz + d = 0
+  return { normal, d }; // Return d directly
+};
 
-// CoordinateSystem (Unchanged)
-const CoordinateSystem = () => (
-  <group>
-    {" "}
-    <mesh position={[0, 0, 0]}>
-      {" "}
-      <sphereGeometry args={[0.03]} />{" "}
-      <meshStandardMaterial color="#ffffff" />{" "}
-    </mesh>{" "}
-    <Line
-      points={[
-        [0, 0, 0],
-        [1, 0, 0],
-      ]}
-      color="red"
-      lineWidth={2}
-    />{" "}
-    <Text position={[1.1, 0, 0]} fontSize={0.05} color="red">
-      X
-    </Text>{" "}
-    <Line
-      points={[
-        [0, 0, 0],
-        [0, 1, 0],
-      ]}
-      color="green"
-      lineWidth={2}
-    />{" "}
-    <Text position={[0, 1.1, 0]} fontSize={0.05} color="green">
-      Y
-    </Text>{" "}
-    <Line
-      points={[
-        [0, 0, 0],
-        [0, 0, 1],
-      ]}
-      color="blue"
-      lineWidth={2}
-    />{" "}
-    <Text position={[0, 0, 1.1]} fontSize={0.05} color="blue">
-      Z
-    </Text>{" "}
-    <gridHelper args={[4, 20, "#555", "#333"]} position={[0, -0.01, 0]} />{" "}
+/**
+ * Calculates the intersection point of two 3D lines using the method of minimizing distance.
+ * L1: P = P1 + t * D1
+ * L2: Q = P2 + s * D2
+ */
+const intersectLineLine = (
+  line1: MathObject,
+  line2: MathObject
+): { point: Vector3; label: string } | null => {
+  const l1 = getLineParams(line1);
+  const l2 = getLineParams(line2);
+  if (!l1 || !l2) return null;
+
+  const p1 = l1.point;
+  const d1 = l1.dir;
+  const p2 = l2.point;
+  const d2 = l2.dir;
+  const w0 = new Vector3().subVectors(p1, p2); // p1 - p2
+
+  const a = d1.dot(d1); // d1 · d1 (>= 0)
+  const b = d1.dot(d2); // d1 · d2
+  const c = d2.dot(d2); // d2 · d2 (>= 0)
+  const d = d1.dot(w0); // d1 · w0
+  const e = d2.dot(w0); // d2 · w0
+
+  const det = a * c - b * b; // Determinant (ac - b^2)
+
+  let t1: number, t2: number; // Parameters for L1 and L2
+
+  // If determinant is near zero, lines are parallel
+  if (Math.abs(det) < EPSILON) {
+    // Check for coincidence (are they the same line?)
+    // If parallel, distance from p2 to line 1 should be near zero if coincident
+    const distSq = d1.clone().cross(w0).lengthSq() / a; // Squared distance from p2 to L1 = |d1 x (p1-p2)|^2 / |d1|^2
+    if (distSq < SQ_EPSILON) {
+      // Coincident
+      return null;
+    } else {
+      // Parallel, non-coincident
+      return null;
+    }
+  } else {
+    // Lines are not parallel, solve for closest point parameters
+    t1 = (b * e - c * d) / det; // Parameter for L1
+    t2 = (a * e - b * d) / det; // Parameter for L2
+  }
+
+  // Calculate points of closest approach on each line
+  const closestPointL1 = p1.clone().addScaledVector(d1, t1);
+  const closestPointL2 = p2.clone().addScaledVector(d2, t2);
+
+  // Check if the distance between closest points is near zero (i.e., they intersect)
+  if (closestPointL1.distanceToSquared(closestPointL2) < SQ_EPSILON) {
+    // Intersect! Return the midpoint for numerical stability.
+    const intersectionPoint = closestPointL1.clone().lerp(closestPointL2, 0.5);
+    const p = intersectionPoint;
+    const label = `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+    return { point: p, label: label };
+  } else {
+    // Lines are skew (non-parallel, non-intersecting)
+    return null;
+  }
+};
+
+/**
+ * Calculates intersection between a line and a plane using THREE.Plane.
+ * Line: P = P0 + t*D
+ * Plane: N · X + d = 0
+ */
+const intersectLinePlane = (
+  lineObj: MathObject,
+  planeObj: MathObject
+): { point: Vector3; label: string } | null => {
+  const lineParams = getLineParams(lineObj);
+  const planeParams = getPlaneParams(planeObj); // Gets N and d
+  if (!lineParams || !planeParams) return null;
+
+  const { point: linePoint, dir: lineDir } = lineParams;
+  const { normal: planeNormal, d: planeD } = planeParams; // Use 'd' directly
+
+  // Create THREE.Plane. NOTE: THREE.Plane uses Ax+By+Cz+D=0 where D is the 'constant'.
+  // Our 'd' matches this definition.
+  const plane = new ThreePlane(planeNormal, planeD);
+
+  // Check if line is parallel to plane
+  const dotDirNormal = lineDir.dot(planeNormal);
+  if (Math.abs(dotDirNormal) < EPSILON) {
+    // Check if line lies within the plane
+    if (Math.abs(plane.distanceToPoint(linePoint)) < EPSILON) {
+      // Line lies within the plane
+      return null;
+    } else {
+      // Line is parallel, no intersection
+      return null;
+    }
+  }
+
+  // Line intersects the plane, find the intersection point
+  const intersectionPoint = new Vector3();
+  // Create a THREE.Line3 representing the infinite line
+  const line3 = new Line3(linePoint, linePoint.clone().add(lineDir));
+  const result = plane.intersectLine(line3, intersectionPoint);
+
+  if (result) {
+    const p = intersectionPoint;
+    const label = `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+    return { point: p, label: label };
+  } else {
+    // Should not happen if dotDirNormal is not zero, but handle anyway
+    console.warn("Line-Plane intersection failed unexpectedly.", {
+      lineDir,
+      planeNormal,
+      dotDirNormal,
+    });
+    return null;
+  }
+};
+
+/**
+ * Calculates intersection line between two planes.
+ * P1: N1 · X + d1 = 0
+ * P2: N2 · X + d2 = 0
+ */
+const intersectPlanePlane = (
+  plane1Obj: MathObject,
+  plane2Obj: MathObject
+): { line: Line3; label: string } | null => {
+  const p1 = getPlaneParams(plane1Obj); // {normal, d}
+  const p2 = getPlaneParams(plane2Obj); // {normal, d}
+  if (!p1 || !p2) return null;
+
+  const n1 = p1.normal;
+  const d1 = p1.d;
+  const n2 = p2.normal;
+  const d2 = p2.d;
+
+  // Calculate line direction = N1 x N2
+  const lineDirection = new Vector3().crossVectors(n1, n2);
+
+  // Check if planes are parallel or coincident
+  if (lineDirection.lengthSq() < SQ_EPSILON) {
+    // Check if coincident: distance from origin of plane1 to plane2 should be zero.
+    // Need a point on plane1. Let's use the projection of the origin onto the plane: P = -d * N / |N|^2 = -d*N (since N is normalized)
+    const pointOnPlane1 = n1.clone().multiplyScalar(-d1);
+    const distPlane2 = Math.abs(n2.dot(pointOnPlane1) + d2); // N2·P + d2
+    if (distPlane2 < EPSILON) {
+      // Coincident
+      return null;
+    } else {
+      // Parallel
+      return null;
+    }
+  }
+
+  lineDirection.normalize(); // Normalize direction vector
+
+  // Find a point P0 on the intersection line.
+  // We need to solve the system:
+  // N1 · P0 + d1 = 0
+  // N2 · P0 + d2 = 0
+  // Strategy: Set one coordinate of P0 to 0 and solve for the other two. Try z=0, then y=0, then x=0.
+
+  let linePoint: Vector3 | null = null;
+
+  // Try setting z = 0:
+  // n1.x*x + n1.y*y = -d1
+  // n2.x*x + n2.y*y = -d2
+  let detXY = n1.x * n2.y - n1.y * n2.x;
+  if (Math.abs(detXY) > EPSILON) {
+    const x = (n1.y * -d2 - n2.y * -d1) / detXY;
+    const y = (n2.x * -d1 - n1.x * -d2) / detXY;
+    linePoint = new Vector3(x, y, 0);
+  } else {
+    // Try setting y = 0:
+    // n1.x*x + n1.z*z = -d1
+    // n2.x*x + n2.z*z = -d2
+    let detXZ = n1.x * n2.z - n1.z * n2.x;
+    if (Math.abs(detXZ) > EPSILON) {
+      const x = (n1.z * -d2 - n2.z * -d1) / detXZ;
+      const z = (n2.x * -d1 - n1.x * -d2) / detXZ;
+      linePoint = new Vector3(x, 0, z);
+    } else {
+      // Try setting x = 0:
+      // n1.y*y + n1.z*z = -d1
+      // n2.y*y + n2.z*z = -d2
+      let detYZ = n1.y * n2.z - n1.z * n2.y;
+      if (Math.abs(detYZ) > EPSILON) {
+        const y = (n1.z * -d2 - n2.z * -d1) / detYZ;
+        const z = (n2.y * -d1 - n1.y * -d2) / detYZ;
+        linePoint = new Vector3(0, y, z);
+      } else {
+        // Should not happen if planes aren't parallel, but indicates issue.
+        console.warn(
+          "Plane-Plane intersection: Could not find a point on the line."
+        );
+        return null;
+      }
+    }
+  }
+
+  if (!linePoint) return null; // Should already be handled, but for safety
+
+  // Create the parametric equation label P = P0 + t*Direction
+  const label = `P = (${linePoint.x.toFixed(1)}, ${linePoint.y.toFixed(1)}, ${linePoint.z.toFixed(1)}) + t(${lineDirection.x.toFixed(1)}, ${lineDirection.y.toFixed(1)}, ${lineDirection.z.toFixed(1)})`;
+
+  // Create a finite Line3 segment centered around the calculated point for visualization
+  const segmentLength = 5;
+  const halfLength = segmentLength / 2;
+  const startPoint = linePoint
+    .clone()
+    .addScaledVector(lineDirection, -halfLength);
+  const endPoint = linePoint.clone().addScaledVector(lineDirection, halfLength);
+  const lineSegment = new Line3(startPoint, endPoint);
+
+  return { line: lineSegment, label: label };
+};
+
+/*************************
+ * Visualization Components (Unchanged from previous version)
+ *************************/
+// --- Intersection Visuals ---
+const IntersectionPoint = ({
+  position,
+  label,
+}: {
+  position: Vector3;
+  label: string;
+}) => (
+  <group position={position}>
+    <mesh>
+      <sphereGeometry args={[0.04, 16, 16]} />
+      <meshStandardMaterial
+        color="#ffff00"
+        emissive="#ccaa00"
+        emissiveIntensity={0.6}
+      />
+    </mesh>
+    <Text
+      position={[0, 0.06, 0]}
+      fontSize={0.045}
+      color="yellow"
+      anchorX="center"
+      anchorY="bottom"
+      outlineWidth={0.002}
+      outlineColor="#000000"
+    >
+      {label}
+    </Text>
   </group>
 );
-
-// ==================================================================
-// START: MathLine - STRICTLY ADHERING TO ORIGINAL EVENT LOGIC
-// ==================================================================
+const IntersectionLine = ({ line, label }: { line: Line3; label: string }) => {
+  const centerPoint = useMemo(() => line.getCenter(new Vector3()), [line]);
+  const lineDir = useMemo(() => {
+    const dir = new Vector3().subVectors(line.end, line.start);
+    const len = dir.length();
+    return len > EPSILON ? dir.divideScalar(len) : new Vector3(1, 0, 0);
+  }, [line]);
+  return (
+    <group>
+      <Line points={[line.start, line.end]} color="#ff00ff" lineWidth={4} />
+      <Text
+        position={centerPoint.addScaledVector(lineDir, 0.1)}
+        fontSize={0.045}
+        color="#ff88ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.002}
+        outlineColor="#000000"
+      >
+        {label}
+      </Text>
+    </group>
+  );
+};
+// --- Core Objects ---
 const MathLine = ({
   id,
   position,
@@ -305,30 +572,20 @@ const MathLine = ({
   color: string;
   isSelected: boolean;
 }) => {
-  // Use actions from the store
   const { updateObjectPosition, selectObject } = useLinePlaneStore();
-  // Refs for meshes and drag state - exactly as in original
   const lineRef = useRef<Mesh>(null);
-  const handleRef = useRef<Mesh>(null); // The sphere used for interaction
+  const handleRef = useRef<Mesh>(null);
   const isDraggingRef = useRef(false);
-  const dragStartPointRef = useRef<Vector3 | null>(null); // World space point where drag started ON the handle
-  const objectStartPositionRef = useRef<Vector3 | null>(null); // Object's world position when drag started
-
-  // Selection handler - exactly as in original
+  const dragStartPointRef = useRef<Vector3 | null>(null);
+  const objectStartPositionRef = useRef<Vector3 | null>(null);
   const handleSelect = () => {
-    console.log(`MathLine (${id}): handleSelect called`); // Debug log
     selectObject(id);
   };
-
-  // Get equation dynamically for text display
   const equation = useLinePlaneStore(
     (state) => state.objects.find((obj) => obj.id === id)?.equation
   );
-
-  // Event handlers attached to the handleRef mesh, matching original logic
   return (
     <group position={position} rotation={rotation}>
-      {/* Visible Line representation - attach select handler here too */}
       <mesh ref={lineRef} onClick={handleSelect}>
         <cylinderGeometry args={[0.01, 0.01, 2, 8]} />
         <meshStandardMaterial
@@ -337,33 +594,19 @@ const MathLine = ({
           transparent
         />
       </mesh>
-
-      {/* Dedicated handle (sphere) for selection and dragging */}
       <mesh
         ref={handleRef}
-        position={[0, 0, 0]} // Position handle at the object's origin (same as group)
-        // onClick for selection
-        onClick={handleSelect} // Use the same selection handler
-        // onPointerDown to initiate drag - LOGIC FROM ORIGINAL
+        position={[0, 0, 0]}
+        onClick={handleSelect}
         onPointerDown={(e) => {
-          console.log(
-            `MathLine (${id}): onPointerDown. isSelected: ${isSelected}, isDragging: ${isDraggingRef.current}`
-          ); // Debug log
-          // Check selection status *before* starting drag
           if (isSelected && !isDraggingRef.current) {
-            e.stopPropagation(); // Prevent events on underlying objects
+            e.stopPropagation();
             isDraggingRef.current = true;
-            dragStartPointRef.current = e.point.clone(); // World space intersection
-            objectStartPositionRef.current = position.clone(); // Current object position
-            console.log(
-              `MathLine (${id}): Drag started. StartPoint: ${dragStartPointRef.current?.toArray()}, StartPos: ${objectStartPositionRef.current?.toArray()}`
-            ); // Debug log
-            // NO POINTER CAPTURE (as per original code provided)
+            dragStartPointRef.current = e.point.clone();
+            objectStartPositionRef.current = position.clone();
           }
         }}
-        // onPointerMove for dragging - LOGIC FROM ORIGINAL
         onPointerMove={(e) => {
-          // Check selection and dragging status
           if (
             isSelected &&
             isDraggingRef.current &&
@@ -371,7 +614,6 @@ const MathLine = ({
             objectStartPositionRef.current
           ) {
             e.stopPropagation();
-            // Calculate delta and new position - LOGIC FROM ORIGINAL
             const dragDelta = new Vector3().subVectors(
               e.point,
               dragStartPointRef.current
@@ -379,47 +621,31 @@ const MathLine = ({
             const newPosition = objectStartPositionRef.current
               .clone()
               .add(dragDelta);
-            // Update store
             updateObjectPosition(id, newPosition);
           }
         }}
-        // onPointerUp to end drag - LOGIC FROM ORIGINAL
         onPointerUp={(e) => {
-          // Event param 'e' might be needed for stopPropagation if added later
           if (isDraggingRef.current) {
-            // Only reset if currently dragging
-            console.log(`MathLine (${id}): onPointerUp`); // Debug log
             isDraggingRef.current = false;
             dragStartPointRef.current = null;
             objectStartPositionRef.current = null;
-            // NO POINTER CAPTURE RELEASE
           }
         }}
-        // onPointerLeave to end drag - LOGIC FROM ORIGINAL
         onPointerLeave={(e) => {
-          // Event param 'e' might be needed
           if (isDraggingRef.current) {
-            // Only reset if currently dragging
-            console.log(`MathLine (${id}): onPointerLeave`); // Debug log
             isDraggingRef.current = false;
             dragStartPointRef.current = null;
             objectStartPositionRef.current = null;
-            // NO POINTER CAPTURE RELEASE
           }
         }}
       >
-        {/* Geometry and Material FOR HANDLE - FROM ORIGINAL */}
-        <sphereGeometry args={[0.05]} /> {/* Small sphere handle */}
+        <sphereGeometry args={[0.05]} />
         <meshStandardMaterial
-          color={isSelected ? "#ffffff" : color} // White when selected, object color otherwise
+          color={isSelected ? "#ffffff" : color}
           opacity={0.8}
           transparent
-          // Make handle always visible or only when selected? Original implies always visible? Let's make it always visible but change color.
-          // visible={isSelected} // Original seemed to only show handle when selected? Let's try always visible for easier interaction.
         />
       </mesh>
-
-      {/* Display equation */}
       <Text
         position={[0, 0.1, 0]}
         fontSize={0.05}
@@ -432,13 +658,6 @@ const MathLine = ({
     </group>
   );
 };
-// ==============================================================
-// END: MathLine - STRICTLY ADHERING TO ORIGINAL EVENT LOGIC
-// ==============================================================
-
-// =================================================================
-// START: MathPlane - STRICTLY ADHERING TO ORIGINAL EVENT LOGIC
-// =================================================================
 const MathPlane = ({
   id,
   position,
@@ -452,89 +671,53 @@ const MathPlane = ({
   color: string;
   isSelected: boolean;
 }) => {
-  // Use actions from the store
   const { updateObjectPosition, selectObject } = useLinePlaneStore();
-  // Refs for mesh and drag state - exactly as in original
   const meshRef = useRef<Mesh>(null);
   const isDraggingRef = useRef(false);
-
-  // Selection handler - exactly as in original
   const handleSelect = () => {
-    console.log(`MathPlane (${id}): handleSelect called`); // Debug log
     selectObject(id);
   };
-
-  // Get equation dynamically for text display
   const equation = useLinePlaneStore(
     (state) => state.objects.find((obj) => obj.id === id)?.equation
   );
-
-  // Event handlers attached directly to the plane mesh, matching original logic
   return (
     <group position={position} rotation={rotation}>
-      {/* Plane representation */}
       <mesh
         ref={meshRef}
-        // onClick for selection - LOGIC FROM ORIGINAL
         onClick={handleSelect}
-        // onPointerDown to initiate drag - LOGIC FROM ORIGINAL
         onPointerDown={(e) => {
-          console.log(
-            `MathPlane (${id}): onPointerDown. isSelected: ${isSelected}, isDragging: ${isDraggingRef.current}`
-          ); // Debug log
-          // Check selection status *before* starting drag
           if (isSelected && !isDraggingRef.current) {
-            e.stopPropagation(); // Prevent events on underlying objects
+            e.stopPropagation();
             isDraggingRef.current = true;
-            console.log(`MathPlane (${id}): Drag started.`); // Debug log
-            // NO POINTER CAPTURE
-            // Optional immediate move from original not included here, wait for move event
           }
         }}
-        // onPointerMove for dragging - LOGIC FROM ORIGINAL
         onPointerMove={(e) => {
-          // Check selection and dragging status
           if (isSelected && isDraggingRef.current) {
             e.stopPropagation();
-            // Update position directly to intersection point - LOGIC FROM ORIGINAL
             updateObjectPosition(id, e.point);
           }
         }}
-        // onPointerUp to end drag - LOGIC FROM ORIGINAL
         onPointerUp={(e) => {
-          // Event param 'e' might be needed
           if (isDraggingRef.current) {
-            // Only reset if currently dragging
-            console.log(`MathPlane (${id}): onPointerUp`); // Debug log
             isDraggingRef.current = false;
-            // NO POINTER CAPTURE RELEASE
           }
         }}
-        // onPointerLeave to end drag - LOGIC FROM ORIGINAL
         onPointerLeave={(e) => {
-          // Event param 'e' might be needed
           if (isDraggingRef.current) {
-            // Only reset if currently dragging
-            console.log(`MathPlane (${id}): onPointerLeave`); // Debug log
             isDraggingRef.current = false;
-            // NO POINTER CAPTURE RELEASE
           }
         }}
       >
-        {/* Geometry and Material - FROM ORIGINAL */}
         <planeGeometry args={[1, 1]} />
         <meshStandardMaterial
           color={color}
           opacity={isSelected ? 0.7 : 0.4}
           transparent
-          side={2} // DoubleSide
-          // Add emissive effect from previous version for better feedback
+          side={2}
           emissive={isSelected ? color : undefined}
           emissiveIntensity={0.3}
         />
       </mesh>
-
-      {/* Display equation - Adjusted position relative to plane */}
       <Text
         position={[0, 0, 0.05]}
         rotation={[-Math.PI / 2, 0, 0]}
@@ -548,11 +731,49 @@ const MathPlane = ({
     </group>
   );
 };
-// ===============================================================
-// END: MathPlane - STRICTLY ADHERING TO ORIGINAL EVENT LOGIC
-// ===============================================================
-
-// --- Panel Button Component (Unchanged) ---
+// --- Environment & UI ---
+const CoordinateSystem = () => (
+  <group>
+    <mesh position={[0, 0, 0]}>
+      <sphereGeometry args={[0.03]} />
+      <meshStandardMaterial color="#ffffff" />
+    </mesh>
+    <Line
+      points={[
+        [0, 0, 0],
+        [1, 0, 0],
+      ]}
+      color="red"
+      lineWidth={2}
+    />
+    <Text position={[1.1, 0, 0]} fontSize={0.05} color="red">
+      X
+    </Text>
+    <Line
+      points={[
+        [0, 0, 0],
+        [0, 1, 0],
+      ]}
+      color="green"
+      lineWidth={2}
+    />
+    <Text position={[0, 1.1, 0]} fontSize={0.05} color="green">
+      Y
+    </Text>
+    <Line
+      points={[
+        [0, 0, 0],
+        [0, 0, 1],
+      ]}
+      color="blue"
+      lineWidth={2}
+    />
+    <Text position={[0, 0, 1.1]} fontSize={0.05} color="blue">
+      Z
+    </Text>
+    <gridHelper args={[4, 20, "#555", "#333"]} position={[0, -0.01, 0]} />
+  </group>
+);
 const PanelButton = ({
   label,
   position,
@@ -571,19 +792,16 @@ const PanelButton = ({
   fontSize?: number;
 }) => (
   <Interactive onSelect={onSelect}>
-    {" "}
     <group position={position}>
-      {" "}
       <mesh>
-        {" "}
-        <planeGeometry args={[width, height]} />{" "}
+        <planeGeometry args={[width, height]} />
         <meshStandardMaterial
           color={color}
           transparent
           opacity={0.9}
           side={2}
-        />{" "}
-      </mesh>{" "}
+        />
+      </mesh>
       <Text
         position={[0, 0, 0.001]}
         fontSize={fontSize}
@@ -591,14 +809,11 @@ const PanelButton = ({
         anchorX="center"
         anchorY="middle"
       >
-        {" "}
-        {label}{" "}
-      </Text>{" "}
-    </group>{" "}
+        {label}
+      </Text>
+    </group>
   </Interactive>
 );
-
-// --- Value Adjuster Component (+/- buttons, Unchanged) ---
 const ValueAdjuster = ({
   label,
   value,
@@ -619,7 +834,7 @@ const ValueAdjuster = ({
   const buttonSize = 0.03;
   const spacing = 0.01;
   const barWidth = 0.25;
-  const increment = 0.25;
+  const increment = 0.5;
   const handleDecrement = () => {
     onChange(paramKey, Math.max(min, value - increment));
   };
@@ -628,7 +843,6 @@ const ValueAdjuster = ({
   };
   return (
     <group position={[0, yPos, 0.01]}>
-      {" "}
       <Text
         position={[-barWidth / 2 - spacing, 0, 0]}
         fontSize={0.018}
@@ -636,9 +850,8 @@ const ValueAdjuster = ({
         anchorX="right"
         anchorY="middle"
       >
-        {" "}
-        {label}:{" "}
-      </Text>{" "}
+        {label}:
+      </Text>
       <Text
         position={[0, 0, 0]}
         fontSize={0.02}
@@ -646,16 +859,13 @@ const ValueAdjuster = ({
         anchorX="center"
         anchorY="middle"
       >
-        {" "}
-        {value.toFixed(1)}{" "}
-      </Text>{" "}
+        {value.toFixed(1)}
+      </Text>
       <Interactive onSelect={handleDecrement}>
-        {" "}
         <mesh position={[-buttonSize - spacing * 3, 0, 0]}>
-          {" "}
-          <planeGeometry args={[buttonSize, buttonSize]} />{" "}
-          <meshStandardMaterial color="#b55" side={2} />{" "}
-        </mesh>{" "}
+          <planeGeometry args={[buttonSize, buttonSize]} />
+          <meshStandardMaterial color="#b55" side={2} />
+        </mesh>
         <Text
           position={[-buttonSize - spacing * 3, 0, 0.001]}
           fontSize={0.02}
@@ -663,17 +873,14 @@ const ValueAdjuster = ({
           anchorX="center"
           anchorY="middle"
         >
-          {" "}
-          -{" "}
-        </Text>{" "}
-      </Interactive>{" "}
+          -
+        </Text>
+      </Interactive>
       <Interactive onSelect={handleIncrement}>
-        {" "}
         <mesh position={[buttonSize + spacing * 3, 0, 0]}>
-          {" "}
-          <planeGeometry args={[buttonSize, buttonSize]} />{" "}
-          <meshStandardMaterial color="#5b5" side={2} />{" "}
-        </mesh>{" "}
+          <planeGeometry args={[buttonSize, buttonSize]} />
+          <meshStandardMaterial color="#5b5" side={2} />
+        </mesh>
         <Text
           position={[buttonSize + spacing * 3, 0, 0.001]}
           fontSize={0.02}
@@ -681,15 +888,12 @@ const ValueAdjuster = ({
           anchorX="center"
           anchorY="middle"
         >
-          {" "}
-          +{" "}
-        </Text>{" "}
-      </Interactive>{" "}
+          +
+        </Text>
+      </Interactive>
     </group>
   );
 };
-
-// --- Control Panel (Unchanged) ---
 const ControlPanel = () => {
   const {
     selectedObjectId,
@@ -706,17 +910,15 @@ const ControlPanel = () => {
   };
   return (
     <group position={panelPosition} rotation={panelRotation}>
-      {" "}
       <mesh>
-        {" "}
-        <planeGeometry args={[0.4, 0.4]} />{" "}
+        <planeGeometry args={[0.4, 0.4]} />
         <meshStandardMaterial
           color="#22224a"
           transparent
           opacity={0.8}
           side={2}
-        />{" "}
-      </mesh>{" "}
+        />
+      </mesh>
       <Text
         position={[0, 0.17, 0.01]}
         fontSize={0.025}
@@ -724,19 +926,18 @@ const ControlPanel = () => {
         anchorX="center"
         anchorY="middle"
       >
-        {" "}
-        Controls{" "}
-      </Text>{" "}
+        Controls
+      </Text>
       <PanelButton
         label="Add Random Line"
         position={[0, 0.11, 0.01]}
         onSelect={() => addLine()}
-      />{" "}
+      />
       <PanelButton
         label="Add Random Plane"
         position={[0, 0.06, 0.01]}
         onSelect={() => addPlane()}
-      />{" "}
+      />
       {selectedObjectId && (
         <PanelButton
           label="Delete Selected"
@@ -744,25 +945,23 @@ const ControlPanel = () => {
           onSelect={() => removeObject(selectedObjectId)}
           color="#a44"
         />
-      )}{" "}
+      )}
       <PanelButton
         label="Clear All"
         position={[0, -0.04, 0.01]}
         onSelect={handleClearAll}
         color="#6f2ca5"
-      />{" "}
+      />
       <PanelButton
         label="Enter Equation Mode"
         position={[0, -0.12, 0.01]}
         onSelect={() => setMode("equation")}
         color="#276"
         width={0.35}
-      />{" "}
+      />
     </group>
   );
 };
-
-// --- Equation Panel (Unchanged) ---
 const EquationPanel = () => {
   const {
     equationType,
@@ -780,17 +979,15 @@ const EquationPanel = () => {
   const normalSliderProps = { min: -1, max: 1 };
   return (
     <group position={panelPosition} rotation={panelRotation}>
-      {" "}
       <mesh>
-        {" "}
-        <planeGeometry args={[0.45, 0.6]} />{" "}
+        <planeGeometry args={[0.45, 0.6]} />
         <meshStandardMaterial
           color="#2a224a"
           transparent
           opacity={0.85}
           side={2}
-        />{" "}
-      </mesh>{" "}
+        />
+      </mesh>
       <Text
         position={[0, 0.27, 0.01]}
         fontSize={0.025}
@@ -798,9 +995,8 @@ const EquationPanel = () => {
         anchorX="center"
         anchorY="middle"
       >
-        {" "}
-        Define Equation{" "}
-      </Text>{" "}
+        Define Equation
+      </Text>
       <PanelButton
         label="Line"
         position={[-0.1, 0.22, 0.01]}
@@ -809,7 +1005,7 @@ const EquationPanel = () => {
         fontSize={0.018}
         onSelect={() => setEquationType("line")}
         color={equationType === "line" ? "#66a" : "#446"}
-      />{" "}
+      />
       <PanelButton
         label="Plane"
         position={[0.1, 0.22, 0.01]}
@@ -818,10 +1014,9 @@ const EquationPanel = () => {
         fontSize={0.018}
         onSelect={() => setEquationType("plane")}
         color={equationType === "plane" ? "#66a" : "#446"}
-      />{" "}
+      />
       {equationType === "line" ? (
         <>
-          {" "}
           <Text
             position={[-0.2, 0.17, 0.01]}
             fontSize={0.018}
@@ -829,7 +1024,7 @@ const EquationPanel = () => {
             anchorX="left"
           >
             Point (pX, pY, pZ)
-          </Text>{" "}
+          </Text>
           <ValueAdjuster
             label="pX"
             value={lineParams.pX}
@@ -837,7 +1032,7 @@ const EquationPanel = () => {
             {...sliderProps}
             onChange={setLineParam}
             yPos={0.13}
-          />{" "}
+          />
           <ValueAdjuster
             label="pY"
             value={lineParams.pY}
@@ -845,7 +1040,7 @@ const EquationPanel = () => {
             {...sliderProps}
             onChange={setLineParam}
             yPos={0.09}
-          />{" "}
+          />
           <ValueAdjuster
             label="pZ"
             value={lineParams.pZ}
@@ -853,7 +1048,7 @@ const EquationPanel = () => {
             {...sliderProps}
             onChange={setLineParam}
             yPos={0.05}
-          />{" "}
+          />
           <Text
             position={[-0.2, 0.0, 0.01]}
             fontSize={0.018}
@@ -861,7 +1056,7 @@ const EquationPanel = () => {
             anchorX="left"
           >
             Direction (dX, dY, dZ)
-          </Text>{" "}
+          </Text>
           <ValueAdjuster
             label="dX"
             value={lineParams.dX}
@@ -869,7 +1064,7 @@ const EquationPanel = () => {
             {...normalSliderProps}
             onChange={setLineParam}
             yPos={-0.04}
-          />{" "}
+          />
           <ValueAdjuster
             label="dY"
             value={lineParams.dY}
@@ -877,7 +1072,7 @@ const EquationPanel = () => {
             {...normalSliderProps}
             onChange={setLineParam}
             yPos={-0.08}
-          />{" "}
+          />
           <ValueAdjuster
             label="dZ"
             value={lineParams.dZ}
@@ -885,11 +1080,10 @@ const EquationPanel = () => {
             {...normalSliderProps}
             onChange={setLineParam}
             yPos={-0.12}
-          />{" "}
+          />
         </>
       ) : (
         <>
-          {" "}
           <Text
             position={[-0.2, 0.17, 0.01]}
             fontSize={0.018}
@@ -897,7 +1091,7 @@ const EquationPanel = () => {
             anchorX="left"
           >
             Normal (nX, nY, nZ)
-          </Text>{" "}
+          </Text>
           <ValueAdjuster
             label="nX"
             value={planeParams.nX}
@@ -905,7 +1099,7 @@ const EquationPanel = () => {
             {...normalSliderProps}
             onChange={setPlaneParam}
             yPos={0.13}
-          />{" "}
+          />
           <ValueAdjuster
             label="nY"
             value={planeParams.nY}
@@ -913,7 +1107,7 @@ const EquationPanel = () => {
             {...normalSliderProps}
             onChange={setPlaneParam}
             yPos={0.09}
-          />{" "}
+          />
           <ValueAdjuster
             label="nZ"
             value={planeParams.nZ}
@@ -921,7 +1115,7 @@ const EquationPanel = () => {
             {...normalSliderProps}
             onChange={setPlaneParam}
             yPos={0.05}
-          />{" "}
+          />
           <Text
             position={[-0.2, 0.0, 0.01]}
             fontSize={0.018}
@@ -929,7 +1123,7 @@ const EquationPanel = () => {
             anchorX="left"
           >
             Constant (d)
-          </Text>{" "}
+          </Text>
           <ValueAdjuster
             label="d"
             value={planeParams.d}
@@ -937,34 +1131,32 @@ const EquationPanel = () => {
             {...sliderProps}
             onChange={setPlaneParam}
             yPos={-0.04}
-          />{" "}
+          />
         </>
-      )}{" "}
+      )}
       <PanelButton
         label="Spawn Object"
         position={[0, -0.19, 0.01]}
         onSelect={spawnFromEquation}
         color="#2a5"
         width={0.25}
-      />{" "}
+      />
       <PanelButton
         label="Back to Controls"
         position={[0, -0.24, 0.01]}
         onSelect={() => setMode("random")}
         color="#777"
         width={0.25}
-      />{" "}
+      />
     </group>
   );
 };
 
 /*************************
- * 3.  Main Scene (Renders objects with corrected interaction)
+ * 4. Main AR Scene Component (using revised intersection helpers)
  *************************/
 export const ARScene = () => {
   const { objects, selectedObjectId, mode } = useLinePlaneStore();
-
-  // Initialize with a line and plane (Unchanged)
   useEffect(() => {
     if (useLinePlaneStore.getState().objects.length === 0) {
       console.log("Seeding initial objects...");
@@ -973,13 +1165,83 @@ export const ARScene = () => {
     }
   }, []);
 
+  // Calculate intersections using revised helpers
+  const intersections = useMemo(() => {
+    // console.log("Recalculating intersections..."); // Less verbose logging
+    type IntersectionResult = {
+      id: string;
+      type: "point" | "line";
+      data: Vector3 | Line3;
+      label: string;
+    };
+    const results: IntersectionResult[] = [];
+    const visibleObjects = objects.filter((o) => o.visible);
+
+    for (let i = 0; i < visibleObjects.length; i++) {
+      for (let j = i + 1; j < visibleObjects.length; j++) {
+        const obj1 = visibleObjects[i];
+        const obj2 = visibleObjects[j];
+        const pairId = `${obj1.id}-${obj2.id}`;
+        let intersectionCalcResult:
+          | { point: Vector3; label: string }
+          | { line: Line3; label: string }
+          | null = null;
+
+        // Calls to revised intersection functions
+        if (obj1.type === "line" && obj2.type === "line") {
+          intersectionCalcResult = intersectLineLine(obj1, obj2);
+          if (intersectionCalcResult) {
+            results.push({
+              id: `${pairId}-p`,
+              type: "point",
+              data: intersectionCalcResult.point,
+              label: intersectionCalcResult.label,
+            });
+          }
+        } else if (obj1.type === "line" && obj2.type === "plane") {
+          intersectionCalcResult = intersectLinePlane(obj1, obj2);
+          if (intersectionCalcResult && "point" in intersectionCalcResult) {
+            results.push({
+              id: `${pairId}-p`,
+              type: "point",
+              data: intersectionCalcResult.point,
+              label: intersectionCalcResult.label,
+            });
+          }
+        } else if (obj1.type === "plane" && obj2.type === "line") {
+          intersectionCalcResult = intersectLinePlane(obj2, obj1);
+          if (intersectionCalcResult && "point" in intersectionCalcResult) {
+            results.push({
+              id: `${pairId}-p`,
+              type: "point",
+              data: intersectionCalcResult.point,
+              label: intersectionCalcResult.label,
+            });
+          }
+        } else if (obj1.type === "plane" && obj2.type === "plane") {
+          intersectionCalcResult = intersectPlanePlane(obj1, obj2);
+          if (intersectionCalcResult && "line" in intersectionCalcResult) {
+            results.push({
+              id: `${pairId}-l`,
+              type: "line",
+              data: intersectionCalcResult.line,
+              label: intersectionCalcResult.label,
+            });
+          }
+        }
+      }
+    }
+    // console.log(`Found ${results.length} intersections.`); // Less verbose logging
+    return results;
+  }, [objects]);
+
   return (
     <>
+      {/* Lighting & Environment */}
       <ambientLight intensity={0.7} />
       <directionalLight position={[2, 5, 3]} intensity={0.5} />
       <CoordinateSystem />
-
-      {/* Render Math Objects using the updated components */}
+      {/* Render Math Objects */}
       {objects.map(
         (object) =>
           object.visible &&
@@ -1003,8 +1265,23 @@ export const ARScene = () => {
             />
           ))
       )}
-
-      {/* Conditionally Render Fixed Panels (Unchanged) */}
+      {/* Render Intersections */}
+      {intersections.map((intersection) =>
+        intersection.type === "point" ? (
+          <IntersectionPoint
+            key={intersection.id}
+            position={intersection.data as Vector3}
+            label={intersection.label}
+          />
+        ) : (
+          <IntersectionLine
+            key={intersection.id}
+            line={intersection.data as Line3}
+            label={intersection.label}
+          />
+        )
+      )}
+      {/* Conditionally Render Control Panels */}
       {mode === "random" ? <ControlPanel /> : <EquationPanel />}
     </>
   );
