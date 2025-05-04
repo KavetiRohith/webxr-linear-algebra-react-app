@@ -783,11 +783,7 @@ const ValueAdjuster = ({
   value: number;
   min: number;
   max: number;
-  onChange: (
-    keyOrRow: keyof PlaneEqParams | number,
-    valueOrCol: number,
-    value?: number
-  ) => void;
+  onChange: (keyOrRow: any, valueOrCol: any, value?: any) => void;
   yPos: number;
   isMatrixCell?: boolean;
   rowIndex?: number;
