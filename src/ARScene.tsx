@@ -12,14 +12,9 @@ import {
 import { create } from "zustand";
 import { generateUUID } from "three/src/math/MathUtils.js";
 
-// --- Constants ---
 const EPSILON = 1e-6;
-const SQ_EPSILON = EPSILON * EPSILON; // Use squared epsilon for distance checks
+const SQ_EPSILON = EPSILON * EPSILON;
 
-/*************************
- * 1. Zustand Store & Helpers
- *************************/
-// --- Interfaces ---
 interface MathObject {
   id: string;
   type: "line" | "plane";
@@ -44,54 +39,50 @@ interface PlaneEqParams {
   d: number;
 }
 
-// RREF State Types
 type Matrix = number[][];
-type RrefModeState = "editing" | "viewing"; // State for RREF panel view
+type RrefModeState = "editing" | "viewing";
 
-// Define the structure for the solution analysis result
 type RrefAnalysisResult = {
   consistency: "consistent" | "inconsistent";
   solutionType: "none" | "unique" | "infinite_line" | "infinite_plane";
   solutionString: string;
+  solutionPoint: Vector3 | null;
 };
 
 interface LinePlaneStoreState {
-  // --- General State ---
   objects: MathObject[];
   selectedObjectId: string | null;
-  mode: "random" | "equation" | "rref"; // Current operating mode
-  equationType: "line" | "plane"; // For equation mode
-  lineParams: LineEqParams; // For equation mode
-  planeParams: PlaneEqParams; // For equation mode
+  mode: "random" | "equation" | "rref";
+  equationType: "line" | "plane";
+  lineParams: LineEqParams;
+  planeParams: PlaneEqParams;
 
-  // --- RREF State ---
-  initialRrefMatrix: Matrix; // Holds the user-editable starting matrix
-  rrefHistory: Matrix[]; // Sequence of matrices from the RREF algorithm calculation
-  rrefStepIndex: number; // Current step index in the history
-  rrefState: RrefModeState; // Controls RREF panel view ('editing' or 'viewing')
-  rrefAnalysis: RrefAnalysisResult | null; // Store analysis result
+  initialRrefMatrix: Matrix;
+  rrefHistory: Matrix[];
+  rrefStepIndex: number;
+  rrefState: RrefModeState;
+  rrefAnalysis: RrefAnalysisResult | null;
+  rrefUniqueSolutionPoint: Vector3 | null;
 
-  // --- Actions ---
   addLine: (position?: Vector3, rotation?: Euler) => void;
   addPlane: (position?: Vector3, rotation?: Euler) => void;
   removeObject: (id: string) => void;
   updateObjectPosition: (id: string, position: Vector3) => void;
-  updateEquation: (id: string) => void; // Updates equation string for MathObject
+  updateEquation: (id: string) => void;
   selectObject: (id: string | null) => void;
-  clearAll: () => void; // Clears general objects
+  clearAll: () => void;
   setMode: (mode: "random" | "equation" | "rref") => void;
   setEquationType: (type: "line" | "plane") => void;
   setLineParam: (param: keyof LineEqParams, value: number) => void;
   setPlaneParam: (param: keyof PlaneEqParams, value: number) => void;
   spawnFromEquation: () => void;
-  // RREF Actions
-  updateInitialRrefCell: (row: number, col: number, value: number) => void; // Edit initial matrix
-  calculateAndStartRrefViewing: () => void; // Trigger calculation from editor
-  resetRrefToEditing: () => void; // Go back to editing state
-  stepRrefHistory: (direction: "back" | "forward") => void; // Navigates RREF steps
+
+  updateInitialRrefCell: (row: number, col: number, value: number) => void;
+  calculateAndStartRrefViewing: () => void;
+  resetRrefToEditing: () => void;
+  stepRrefHistory: (direction: "back" | "forward") => void;
 }
 
-// --- Defaults & Helpers ---
 const defaultLineParams: LineEqParams = {
   pX: 0,
   pY: 1,
@@ -103,9 +94,9 @@ const defaultLineParams: LineEqParams = {
 const defaultPlaneParams: PlaneEqParams = { nX: 0, nY: 1, nZ: 0, d: -1 };
 
 const sampleMatrix: Matrix = [
-  [1, 2, -1, 3], // x + 2y - z = 3
-  [2, 4, 1, 2], // 2x + 4y + z = 2
-  [3, 6, 2, 7], // 3x + 6y + 2z = 7 (Changed RHS for unique solution example)
+  [1, 2, -1, 3],
+  [2, 4, 1, 2],
+  [3, 6, 2, 7],
 ];
 
 const deepCopyMatrix = (matrix: Matrix): Matrix =>
@@ -141,7 +132,6 @@ const getPlaneTransform = (
   return { position, rotation };
 };
 
-/** Calculates position/rotation for a plane from row: ax + by + cz = d_rhs */
 const getPlaneTransformFromRow = (
   row: number[]
 ): { position: Vector3; rotation: Euler; isValid: boolean } | null => {
@@ -153,16 +143,16 @@ const getPlaneTransformFromRow = (
   const normal = new Vector3(a, b, c);
   const normalLenSq = normal.lengthSq();
   if (normalLenSq < SQ_EPSILON) {
-    const isValid = Math.abs(d_rhs) < EPSILON; // Check if 0 = 0
+    const isValid = Math.abs(d_rhs) < EPSILON;
     return {
-      position: new Vector3(0, -999, 0), // Place degenerate planes off-screen
+      position: new Vector3(0, -999, 0),
       rotation: new Euler(),
       isValid: isValid,
     };
   }
   normal.normalize();
-  const D = -d_rhs; // Constant for N·X + D = 0 form
-  const position = normal.clone().multiplyScalar(-D); // = d_rhs * N
+  const D = -d_rhs;
+  const position = normal.clone().multiplyScalar(-D);
   const quaternion = new Quaternion().setFromUnitVectors(
     new Vector3(0, 0, 1),
     normal
@@ -171,16 +161,15 @@ const getPlaneTransformFromRow = (
   return { position, rotation, isValid: true };
 };
 
-/** Calculates RREF steps, returning history array */
 const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
   const history: Matrix[] = [deepCopyMatrix(initialMatrix)];
   let matrix = deepCopyMatrix(initialMatrix);
   const numRows = matrix.length;
   if (numRows === 0) return history;
-  const numCols = matrix[0]?.length || 0;
+  const numCols = matrix[0].length;
   if (numCols === 0) return history;
   let pivotRow = 0;
-  // Forward Elimination
+
   for (
     let pivotCol = 0;
     pivotCol < numCols - 1 && pivotRow < numRows;
@@ -194,7 +183,7 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
     }
     if (Math.abs(matrix[maxRow][pivotCol]) < EPSILON) {
       continue;
-    } // Skip column if pivot is zero
+    }
     if (maxRow !== pivotRow) {
       [matrix[pivotRow], matrix[maxRow]] = [matrix[maxRow], matrix[pivotRow]];
       history.push(deepCopyMatrix(matrix));
@@ -204,7 +193,7 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
       matrix[pivotRow] = matrix[pivotRow].map((el) => el / pivotValue);
       matrix[pivotRow] = matrix[pivotRow].map((val) =>
         Math.abs(val) < EPSILON ? 0 : val
-      ); // Clean near-zero
+      );
       history.push(deepCopyMatrix(matrix));
     }
     for (let i = 0; i < numRows; i++) {
@@ -216,19 +205,18 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
           );
           matrix[i] = matrix[i].map((val) =>
             Math.abs(val) < EPSILON ? 0 : val
-          ); // Clean near-zero
+          );
           history.push(deepCopyMatrix(matrix));
         }
       }
     }
     pivotRow++;
   }
-  // Back Substitution
+
   for (let i = numRows - 1; i >= 0; i--) {
     let pivotCol = -1;
     for (let j = 0; j < numCols - 1; j++) {
       if (Math.abs(matrix[i][j] - 1.0) < EPSILON) {
-        // Check if it's a leading 1
         let isLeading = true;
         for (let k = 0; k < j; k++) {
           if (Math.abs(matrix[i][k]) > EPSILON) {
@@ -241,19 +229,17 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
           break;
         }
       } else if (Math.abs(matrix[i][j]) > EPSILON) {
-        break; // Found non-zero before a potential leading 1
+        break;
       }
     }
     if (pivotCol !== -1) {
-      // If a leading 1 was found
       for (let k = i - 1; k >= 0; k--) {
-        // Eliminate elements above it
         const factor = matrix[k][pivotCol];
         if (Math.abs(factor) > EPSILON) {
           matrix[k] = matrix[k].map((el, j) => el - factor * matrix[i][j]);
           matrix[k] = matrix[k].map((val) =>
             Math.abs(val) < EPSILON ? 0 : val
-          ); // Clean near-zero
+          );
           history.push(deepCopyMatrix(matrix));
         }
       }
@@ -262,7 +248,6 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
   return history;
 };
 
-/** Analyzes RREF matrix for consistency and solution type. */
 const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
   const numRows = rrefMatrix.length;
   if (numRows === 0)
@@ -270,6 +255,7 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
       consistency: "inconsistent",
       solutionType: "none",
       solutionString: "No equations.",
+      solutionPoint: null,
     };
   const numCols = rrefMatrix[0]?.length || 0;
   if (numCols < 2)
@@ -277,6 +263,7 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
       consistency: "inconsistent",
       solutionType: "none",
       solutionString: "Invalid matrix shape.",
+      solutionPoint: null,
     };
   const numVars = numCols - 1;
 
@@ -287,19 +274,16 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
     let pivotFoundInRow = false;
     for (let c = 0; c < numCols; c++) {
       if (Math.abs(rrefMatrix[r][c]) > EPSILON) {
-        // First non-zero entry
         if (c < numVars) {
-          // Pivot in coefficient part
           pivotFoundInRow = true;
         } else {
-          // Non-zero only in augmented column -> inconsistent row [0 ... 0 | k != 0]
           inconsistent = true;
         }
-        break; // Found first non-zero, move to next row
+        break;
       }
     }
     if (inconsistent) break;
-    if (pivotFoundInRow) rank++; // Increment rank if pivot was in coefficient part
+    if (pivotFoundInRow) rank++;
   }
 
   if (inconsistent) {
@@ -307,24 +291,21 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
       consistency: "inconsistent",
       solutionType: "none",
       solutionString: "Inconsistent system (no solution).",
+      solutionPoint: null,
     };
   }
 
-  // Consistent System
   if (rank === numVars) {
-    // Unique solution
-    let solVec = new Vector3();
+    let solPoint = new Vector3();
+    let solStr = "Unique Solution: (Error)";
     try {
       let x_val = 0,
         y_val = 0,
         z_val = 0;
-      // More robust extraction based on pivot columns
       for (let r = 0; r < rank; r++) {
-        // Iterate through non-zero rows up to rank
         let pivotCol = -1;
         for (let c = 0; c < numVars; c++) {
           if (Math.abs(rrefMatrix[r][c] - 1.0) < EPSILON) {
-            // Find the leading 1
             let isLeading = true;
             for (let k = 0; k < c; k++) {
               if (Math.abs(rrefMatrix[r][k]) > EPSILON) {
@@ -338,20 +319,19 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
             }
           } else if (Math.abs(rrefMatrix[r][c]) > EPSILON) {
             break;
-          } // Non-1 pivot? Should not happen in RREF
+          }
         }
         if (pivotCol === 0) x_val = rrefMatrix[r][numVars];
         else if (pivotCol === 1) y_val = rrefMatrix[r][numVars];
         else if (pivotCol === 2) z_val = rrefMatrix[r][numVars];
       }
-      solVec.set(x_val, y_val, z_val);
-
-      const p = solVec;
-      const solStr = `Unique Solution: (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      solPoint.set(x_val, y_val, z_val);
+      solStr = `Unique Solution: (${solPoint.x.toFixed(2)}, ${solPoint.y.toFixed(2)}, ${solPoint.z.toFixed(2)})`;
       return {
         consistency: "consistent",
         solutionType: "unique",
         solutionString: solStr,
+        solutionPoint: solPoint,
       };
     } catch (e) {
       console.error("Error extracting unique solution:", e);
@@ -359,44 +339,37 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
         consistency: "consistent",
         solutionType: "unique",
         solutionString: "Unique Solution (Error parsing values)",
+        solutionPoint: null,
       };
     }
   } else {
-    // Infinite solutions (rank < numVars)
     const freeVars = numVars - rank;
+    let type: RrefAnalysisResult["solutionType"] = "infinite_line";
+    let typeStr = `Infinite Solutions (${freeVars} free variable(s))`;
     if (numVars === 3) {
-      // Specific interpretation for 3 variables
-      if (freeVars === 1)
-        return {
-          consistency: "consistent",
-          solutionType: "infinite_line",
-          solutionString: "Infinite Solutions (Line)",
-        };
-      if (freeVars === 2)
-        return {
-          consistency: "consistent",
-          solutionType: "infinite_plane",
-          solutionString: "Infinite Solutions (Plane)",
-        };
-      if (freeVars === 3 && rank === 0)
-        return {
-          consistency: "consistent",
-          solutionType: "infinite_plane",
-          solutionString: "Infinite Solutions (All R³)",
-        }; // All vars free if rank is 0
+      if (freeVars === 1) {
+        type = "infinite_line";
+        typeStr = "Infinite Solutions (Line)";
+      }
+      if (freeVars === 2) {
+        type = "infinite_plane";
+        typeStr = "Infinite Solutions (Plane)";
+      }
+      if (freeVars === 3 && rank === 0) {
+        type = "infinite_plane";
+        typeStr = "Infinite Solutions (All R³)";
+      }
     }
-    // General case for other dimensions or fallback
     return {
       consistency: "consistent",
-      solutionType: "infinite_line", // Default classification
-      solutionString: `Infinite Solutions (${freeVars} free variable(s))`,
+      solutionType: type,
+      solutionString: typeStr,
+      solutionPoint: null,
     };
   }
 };
 
-// --- Zustand Store Hook ---
 export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
-  // --- Initial State ---
   objects: [],
   selectedObjectId: null,
   mode: "random",
@@ -408,8 +381,8 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
   rrefStepIndex: -1,
   rrefState: "editing",
   rrefAnalysis: null,
+  rrefUniqueSolutionPoint: null,
 
-  // --- Actions ---
   addLine: (position?: Vector3, rotation?: Euler) => {
     if (!position) {
       position = new Vector3(
@@ -540,6 +513,7 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
         rrefHistory: [],
         rrefStepIndex: -1,
         rrefAnalysis: null,
+        rrefUniqueSolutionPoint: null,
         objects: [],
         selectedObjectId: null,
       });
@@ -549,6 +523,7 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
         rrefHistory: [],
         rrefStepIndex: -1,
         rrefAnalysis: null,
+        rrefUniqueSolutionPoint: null,
       });
     }
   },
@@ -567,7 +542,7 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       addPlane(position, rotation);
     }
   },
-  // RREF Actions
+
   updateInitialRrefCell: (row, col, value) => {
     const currentMatrix = get().initialRrefMatrix;
     if (
@@ -592,6 +567,7 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       rrefStepIndex: 0,
       rrefState: "viewing",
       rrefAnalysis: analysis,
+      rrefUniqueSolutionPoint: analysis.solutionPoint,
     });
   },
   resetRrefToEditing: () => {
@@ -600,6 +576,7 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       rrefHistory: [],
       rrefStepIndex: -1,
       rrefAnalysis: null,
+      rrefUniqueSolutionPoint: null,
     });
   },
   stepRrefHistory: (direction) => {
@@ -614,11 +591,7 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
     }
   },
 }));
-// --- END OF STORE ---
 
-/*************************
- * Intersection Math Helpers
- *************************/
 const getLineParams = (
   lineObj: MathObject
 ): { point: Vector3; dir: Vector3 } | null => {
@@ -715,56 +688,63 @@ const intersectPlanePlane = (
   const d1 = p1.d;
   const n2 = p2.normal;
   const d2 = p2.d;
+
   const lineDirection = new Vector3().crossVectors(n1, n2);
   if (lineDirection.lengthSq() < SQ_EPSILON) {
-    const pointOnPlane1 = n1.clone().multiplyScalar(-d1);
-    const distPlane2 = Math.abs(n2.dot(pointOnPlane1) + d2);
-    if (distPlane2 < EPSILON) {
-      return null;
-    } else {
-      return null;
-    }
+    return null;
   }
   lineDirection.normalize();
+
   let linePoint: Vector3 | null = null;
   let detXY = n1.x * n2.y - n1.y * n2.x;
   if (Math.abs(detXY) > EPSILON) {
-    const x = (n1.y * -d2 - n2.y * -d1) / detXY;
-    const y = (n2.x * -d1 - n1.x * -d2) / detXY;
-    linePoint = new Vector3(x, y, 0);
+    const n1xn2 = new Vector3().crossVectors(n1, n2);
+    const term1 = n2.clone().multiplyScalar(-d1);
+    const term2 = n1.clone().multiplyScalar(-d2);
+    linePoint = new Vector3()
+      .crossVectors(term1.sub(term2), n1xn2)
+      .divideScalar(n1xn2.lengthSq());
   } else {
     let detXZ = n1.x * n2.z - n1.z * n2.x;
     if (Math.abs(detXZ) > EPSILON) {
-      const x = (n1.z * -d2 - n2.z * -d1) / detXZ;
-      const z = (n2.x * -d1 - n1.x * -d2) / detXZ;
-      linePoint = new Vector3(x, 0, z);
+      const n1xn2 = new Vector3().crossVectors(n1, n2);
+      const term1 = n2.clone().multiplyScalar(-d1);
+      const term2 = n1.clone().multiplyScalar(-d2);
+      linePoint = new Vector3()
+        .crossVectors(term1.sub(term2), n1xn2)
+        .divideScalar(n1xn2.lengthSq());
     } else {
       let detYZ = n1.y * n2.z - n1.z * n2.y;
       if (Math.abs(detYZ) > EPSILON) {
-        const y = (n1.z * -d2 - n2.z * -d1) / detYZ;
-        const z = (n2.y * -d1 - n1.y * -d2) / detYZ;
-        linePoint = new Vector3(0, y, z);
+        const n1xn2 = new Vector3().crossVectors(n1, n2);
+        const term1 = n2.clone().multiplyScalar(-d1);
+        const term2 = n1.clone().multiplyScalar(-d2);
+        linePoint = new Vector3()
+          .crossVectors(term1.sub(term2), n1xn2)
+          .divideScalar(n1xn2.lengthSq());
       } else {
+        console.warn(
+          "Plane-Plane intersection: Could not find a point on the line (degenerate case)."
+        );
         return null;
       }
     }
   }
+
   if (!linePoint) return null;
+
   const label = `P = (${linePoint.x.toFixed(1)}, ${linePoint.y.toFixed(1)}, ${linePoint.z.toFixed(1)}) + t(${lineDirection.x.toFixed(1)}, ${lineDirection.y.toFixed(1)}, ${lineDirection.z.toFixed(1)})`;
-  const segmentLength = 5;
+  const segmentLength = 10;
   const halfLength = segmentLength / 2;
   const startPoint = linePoint
     .clone()
     .addScaledVector(lineDirection, -halfLength);
   const endPoint = linePoint.clone().addScaledVector(lineDirection, halfLength);
   const lineSegment = new Line3(startPoint, endPoint);
+
   return { line: lineSegment, label: label };
 };
 
-/*************************
- * Visualization Components
- *************************/
-// --- Intersection Visuals ---
 const IntersectionPoint = ({
   position,
   label,
@@ -818,7 +798,7 @@ const IntersectionLine = ({ line, label }: { line: Line3; label: string }) => {
     </group>
   );
 };
-// --- Core Objects ---
+
 const MathLine = ({
   id,
   position,
@@ -884,14 +864,14 @@ const MathLine = ({
             updateObjectPosition(id, newPosition);
           }
         }}
-        onPointerUp={(e) => {
+        onPointerUp={() => {
           if (isDraggingRef.current) {
             isDraggingRef.current = false;
             dragStartPointRef.current = null;
             objectStartPositionRef.current = null;
           }
         }}
-        onPointerLeave={(e) => {
+        onPointerLeave={() => {
           if (isDraggingRef.current) {
             isDraggingRef.current = false;
             dragStartPointRef.current = null;
@@ -956,12 +936,12 @@ const MathPlane = ({
       updateObjectPosition(id, e.point);
     }
   };
-  const handlePointerUp = (e: any) => {
+  const handlePointerUp = () => {
     if (isDraggingRef.current) {
       isDraggingRef.current = false;
     }
   };
-  const handlePointerLeave = (e: any) => {
+  const handlePointerLeave = () => {
     if (isDraggingRef.current) {
       isDraggingRef.current = false;
     }
@@ -999,7 +979,7 @@ const MathPlane = ({
     </group>
   );
 };
-// --- Environment & UI ---
+
 const CoordinateSystem = () => (
   <group>
     <mesh position={[0, 0, 0]}>
@@ -1198,7 +1178,7 @@ const ValueAdjuster = ({
     </group>
   );
 };
-// --- Control Panels ---
+
 const ControlPanel = () => {
   const {
     selectedObjectId,
@@ -1290,7 +1270,6 @@ const EquationPanel = () => {
   } = useLinePlaneStore();
   const panelPosition = useMemo(() => new Vector3(0, 1.5, -1.0), []);
   const panelRotation = useMemo(() => new Euler(0, 0, 0), []);
-  const normalSliderProps = { min: -1, max: 1 };
   return (
     <group position={panelPosition} rotation={panelRotation}>
       <mesh>
@@ -1475,7 +1454,7 @@ const EquationPanel = () => {
     </group>
   );
 };
-// --- RREF Panel (With Solution Analysis Display & Layout Fixes) ---
+
 const RrefPanel = () => {
   const {
     initialRrefMatrix,
@@ -1491,7 +1470,7 @@ const RrefPanel = () => {
   } = useLinePlaneStore();
   const panelPosition = useMemo(() => new Vector3(0, 1.2, -1.0), []);
   const panelRotation = useMemo(() => new Euler(0, 0, 0), []);
-  const cellWidth = 0.12;
+  const cellWidth = 0.13;
   const cellHeight = 0.06;
   const cellPadding = 0.02;
   const matrixToDisplay =
@@ -1513,9 +1492,9 @@ const RrefPanel = () => {
   const matrixWidth =
     numCols * cellWidth + (numCols > 0 ? (numCols - 1) * cellPadding : 0);
   const matrixOriginX = -matrixWidth / 2;
-  const matrixOriginY = 0.16;
+  const matrixOriginY = 0.18;
   const panelWidth = Math.max(0.65, matrixWidth + 0.15);
-  const panelHeight = 0.75;
+  const panelHeight = 0.8;
 
   const formatNumberDisplay = (num: number) => {
     if (Math.abs(num) < EPSILON) return "0";
@@ -1559,6 +1538,7 @@ const RrefPanel = () => {
           Step {rrefStepIndex + 1} / {rrefHistory.length}
         </Text>
       )}
+
       <group position={[matrixOriginX, matrixOriginY, 0.01]}>
         {matrixToDisplay.map((row, r) => (
           <group
@@ -1603,118 +1583,117 @@ const RrefPanel = () => {
           </group>
         ))}
       </group>
-      {rrefState === "editing" ? (
-        <group
-          position={[
-            0,
-            matrixOriginY - numRows * (cellHeight + cellPadding) - 0.06,
-            0.01,
-          ]}
-        >
-          <PanelButton
-            label="Calculate RREF Steps"
-            position={[0, 0, 0]}
-            width={0.4}
-            height={0.04}
-            fontSize={0.018}
-            color={"#4a4"}
-            onSelect={calculateAndStartRrefViewing}
-          />
-          <PanelButton
-            label="Back to Controls"
-            position={[0, -0.06, 0]}
-            width={0.3}
-            onSelect={() => setMode("random")}
-            color="#777"
-          />
-        </group>
-      ) : (
-        // Viewing State
-        <group
-          position={[
-            0,
-            matrixOriginY - numRows * (cellHeight + cellPadding) - 0.03,
-            0.01,
-          ]}
-        >
-          <group position={[0, 0, 0]}>
+
+      <group
+        position={[
+          0,
+          matrixOriginY - numRows * (cellHeight + cellPadding) - 0.08,
+          0.01,
+        ]}
+      >
+        {rrefState === "editing" ? (
+          <>
             <PanelButton
-              label="< Prev Step"
-              position={[-0.15, 0, 0]}
-              width={0.18}
-              height={0.04}
-              fontSize={0.018}
-              color={"#aaa"}
-              onSelect={() => stepRrefHistory("back")}
-              disabled={rrefStepIndex <= 0}
-            />
-            <PanelButton
-              label="Next Step >"
-              position={[0.15, 0, 0]}
-              width={0.18}
-              height={0.04}
-              fontSize={0.018}
-              color={"#aaa"}
-              onSelect={() => stepRrefHistory("forward")}
-              disabled={rrefStepIndex >= rrefHistory.length - 1}
-            />
-          </group>
-          {isViewingLastStep && rrefAnalysis && (
-            <group position={[0, -0.06, 0]}>
-              <Text
-                fontSize={0.018}
-                color={
-                  rrefAnalysis.consistency === "inconsistent"
-                    ? "red"
-                    : "lightgreen"
-                }
-                anchorX="center"
-                position={[0, 0, 0.01]}
-              >
-                {rrefAnalysis.consistency === "inconsistent"
-                  ? "System Inconsistent"
-                  : "System Consistent"}
-              </Text>
-              <Text
-                fontSize={0.016}
-                color="white"
-                anchorX="center"
-                position={[0, -0.025, 0.01]}
-                maxWidth={panelWidth * 0.9}
-              >
-                {rrefAnalysis.solutionString}
-              </Text>
-            </group>
-          )}
-          <group
-            position={[0, isViewingLastStep && rrefAnalysis ? -0.13 : -0.06, 0]}
-          >
-            <PanelButton
-              label="Reset / Edit Initial"
+              label="Calculate RREF Steps"
               position={[0, 0, 0]}
-              width={0.3}
-              height={0.035}
-              fontSize={0.015}
-              color={"#f88"}
-              onSelect={resetRrefToEditing}
+              width={0.4}
+              height={0.04}
+              fontSize={0.018}
+              color={"#4a4"}
+              onSelect={calculateAndStartRrefViewing}
             />
             <PanelButton
               label="Back to Controls"
-              position={[0, -0.05, 0]}
+              position={[0, -0.06, 0]}
               width={0.3}
               onSelect={() => setMode("random")}
               color="#777"
             />
-          </group>
-        </group>
-      )}
+          </>
+        ) : (
+          <>
+            <group position={[0, 0, 0]}>
+              <PanelButton
+                label="< Prev Step"
+                position={[-0.15, 0, 0]}
+                width={0.18}
+                height={0.04}
+                fontSize={0.018}
+                color={"#aaa"}
+                onSelect={() => stepRrefHistory("back")}
+                disabled={rrefStepIndex <= 0}
+              />
+              <PanelButton
+                label="Next Step >"
+                position={[0.15, 0, 0]}
+                width={0.18}
+                height={0.04}
+                fontSize={0.018}
+                color={"#aaa"}
+                onSelect={() => stepRrefHistory("forward")}
+                disabled={rrefStepIndex >= rrefHistory.length - 1}
+              />
+            </group>
+
+            {isViewingLastStep && rrefAnalysis && (
+              <group position={[0, -0.06, 0]}>
+                <Text
+                  fontSize={0.018}
+                  color={
+                    rrefAnalysis.consistency === "inconsistent"
+                      ? "red"
+                      : "lightgreen"
+                  }
+                  anchorX="center"
+                  position={[0, 0, 0.01]}
+                >
+                  {rrefAnalysis.consistency === "inconsistent"
+                    ? "System Inconsistent"
+                    : "System Consistent"}
+                </Text>
+                <Text
+                  fontSize={0.016}
+                  color="white"
+                  anchorX="center"
+                  position={[0, -0.025, 0.01]}
+                  maxWidth={panelWidth * 0.9}
+                >
+                  {rrefAnalysis.solutionString}
+                </Text>
+              </group>
+            )}
+
+            <group
+              position={[
+                0,
+                isViewingLastStep && rrefAnalysis ? -0.13 : -0.06,
+                0,
+              ]}
+            >
+              <PanelButton
+                label="Reset / Edit Initial"
+                position={[0, 0, 0]}
+                width={0.3}
+                height={0.035}
+                fontSize={0.015}
+                color={"#f88"}
+                onSelect={resetRrefToEditing}
+              />
+              <PanelButton
+                label="Back to Controls"
+                position={[0, -0.05, 0]}
+                width={0.3}
+                onSelect={() => setMode("random")}
+                color="#777"
+              />
+            </group>
+          </>
+        )}
+      </group>
     </group>
   );
 };
 
-/*************************
- * 4. Main AR Scene Component
- *************************/
 export const ARScene = () => {
   const {
     objects,
@@ -1724,6 +1703,8 @@ export const ARScene = () => {
     rrefHistory,
     rrefStepIndex,
     rrefState,
+    rrefAnalysis,
+    rrefUniqueSolutionPoint,
   } = useLinePlaneStore();
 
   useEffect(() => {
@@ -1733,7 +1714,8 @@ export const ARScene = () => {
     }
   }, [mode]);
 
-  // Calculate dynamic plane data for RREF mode based on state
+  const rrefScale = 1 / 3;
+
   const rrefPlaneData = useMemo(() => {
     if (mode !== "rref") return [];
     const matrixToVisualize =
@@ -1772,7 +1754,6 @@ export const ARScene = () => {
     return planeData;
   }, [mode, rrefState, initialRrefMatrix, rrefHistory, rrefStepIndex]);
 
-  // Calculate Intersections based on current mode/data
   const intersections = useMemo(() => {
     type IntersectionResult = {
       id: string;
@@ -1875,35 +1856,48 @@ export const ARScene = () => {
 
       {mode === "rref" ? (
         <>
-          {rrefPlaneData.map(
-            (plane) =>
-              plane.isValid && (
-                <MathPlane
-                  key={plane.id}
-                  id={plane.id}
-                  position={plane.position}
-                  rotation={plane.rotation}
-                  color={plane.color}
-                  isSelected={false}
-                  equation={plane.equation}
+          <group scale={[rrefScale, rrefScale, rrefScale]}>
+            {rrefPlaneData.map(
+              (plane) =>
+                plane.isValid && (
+                  <MathPlane
+                    key={plane.id}
+                    id={plane.id}
+                    position={plane.position}
+                    rotation={plane.rotation}
+                    color={plane.color}
+                    isSelected={false}
+                    equation={plane.equation}
+                  />
+                )
+            )}
+
+            {intersections.map((intersection) =>
+              intersection.type === "point" ? (
+                <IntersectionPoint
+                  key={intersection.id}
+                  position={intersection.data as Vector3}
+                  label={intersection.label}
+                />
+              ) : (
+                <IntersectionLine
+                  key={intersection.id}
+                  line={intersection.data as Line3}
+                  label={intersection.label}
                 />
               )
-          )}
-          {intersections.map((intersection) =>
-            intersection.type === "point" ? (
-              <IntersectionPoint
-                key={intersection.id}
-                position={intersection.data as Vector3}
-                label={intersection.label}
-              />
-            ) : (
-              <IntersectionLine
-                key={intersection.id}
-                line={intersection.data as Line3}
-                label={intersection.label}
-              />
-            )
-          )}
+            )}
+
+            {rrefAnalysis?.solutionType === "unique" &&
+              rrefUniqueSolutionPoint && (
+                <IntersectionPoint
+                  key="rref-solution-point"
+                  position={rrefUniqueSolutionPoint}
+                  label={"Solution"}
+                />
+              )}
+          </group>
+
           <RrefPanel />
         </>
       ) : (
@@ -1931,6 +1925,7 @@ export const ARScene = () => {
                 />
               ))
           )}
+
           {intersections.map((intersection) =>
             intersection.type === "point" ? (
               <IntersectionPoint
@@ -1946,6 +1941,7 @@ export const ARScene = () => {
               />
             )
           )}
+
           {mode === "random" ? <ControlPanel /> : <EquationPanel />}
         </>
       )}
