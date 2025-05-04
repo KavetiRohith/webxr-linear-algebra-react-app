@@ -5,6 +5,9 @@ import { Vector3, Euler, Quaternion, Mesh, Line3 } from "three";
 import { create } from "zustand";
 import { generateUUID } from "three/src/math/MathUtils.js";
 
+const EPSILON = 1e-6;
+const SQ_EPSILON = EPSILON * EPSILON;
+
 interface MathObject {
   id: string;
   type: "plane";
@@ -36,7 +39,6 @@ interface LinePlaneStoreState {
   objects: MathObject[];
   selectedObjectId: string | null;
   mode: "random" | "equation" | "rref";
-
   planeParams: PlaneEqParams;
 
   initialRrefMatrix: Matrix;
@@ -53,7 +55,6 @@ interface LinePlaneStoreState {
   selectObject: (id: string | null) => void;
   clearAll: () => void;
   setMode: (mode: "random" | "equation" | "rref") => void;
-
   setPlaneParam: (param: keyof PlaneEqParams, value: number) => void;
   spawnFromEquation: () => void;
 
@@ -78,7 +79,7 @@ const getPlaneTransform = (
   params: PlaneEqParams
 ): { position: Vector3; rotation: Euler } => {
   const normal = new Vector3(params.nX, params.nY, params.nZ);
-  if (normal.lengthSq() < 1e-6 * 1e-6) normal.set(0, 1, 0);
+  if (normal.lengthSq() < SQ_EPSILON) normal.set(0, 1, 0);
   normal.normalize();
   const position = normal.clone().multiplyScalar(-params.d);
   const quaternion = new Quaternion().setFromUnitVectors(
@@ -99,8 +100,8 @@ const getPlaneTransformFromRow = (
   const d_rhs = row[3];
   const normal = new Vector3(a, b, c);
   const normalLenSq = normal.lengthSq();
-  if (normalLenSq < 1e-6 * 1e-6) {
-    const isValid = Math.abs(d_rhs) < 1e-6;
+  if (normalLenSq < SQ_EPSILON) {
+    const isValid = Math.abs(d_rhs) < EPSILON;
     return {
       position: new Vector3(0, -999, 0),
       rotation: new Euler(),
@@ -138,7 +139,7 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
         maxRow = k;
       }
     }
-    if (Math.abs(matrix[maxRow][pivotCol]) < 1e-6) {
+    if (Math.abs(matrix[maxRow][pivotCol]) < EPSILON) {
       continue;
     }
     if (maxRow !== pivotRow) {
@@ -146,21 +147,23 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
       history.push(deepCopyMatrix(matrix));
     }
     const pivotValue = matrix[pivotRow][pivotCol];
-    if (Math.abs(pivotValue - 1.0) > 1e-6) {
+    if (Math.abs(pivotValue - 1.0) > EPSILON) {
       matrix[pivotRow] = matrix[pivotRow].map((el) => el / pivotValue);
       matrix[pivotRow] = matrix[pivotRow].map((val) =>
-        Math.abs(val) < 1e-6 ? 0 : val
+        Math.abs(val) < EPSILON ? 0 : val
       );
       history.push(deepCopyMatrix(matrix));
     }
     for (let i = 0; i < numRows; i++) {
       if (i !== pivotRow) {
         const factor = matrix[i][pivotCol];
-        if (Math.abs(factor) > 1e-6) {
+        if (Math.abs(factor) > EPSILON) {
           matrix[i] = matrix[i].map(
             (el, j) => el - factor * matrix[pivotRow][j]
           );
-          matrix[i] = matrix[i].map((val) => (Math.abs(val) < 1e-6 ? 0 : val));
+          matrix[i] = matrix[i].map((val) =>
+            Math.abs(val) < EPSILON ? 0 : val
+          );
           history.push(deepCopyMatrix(matrix));
         }
       }
@@ -171,10 +174,10 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
   for (let i = numRows - 1; i >= 0; i--) {
     let pivotCol = -1;
     for (let j = 0; j < numCols - 1; j++) {
-      if (Math.abs(matrix[i][j] - 1.0) < 1e-6) {
+      if (Math.abs(matrix[i][j] - 1.0) < EPSILON) {
         let isLeading = true;
         for (let k = 0; k < j; k++) {
-          if (Math.abs(matrix[i][k]) > 1e-6) {
+          if (Math.abs(matrix[i][k]) > EPSILON) {
             isLeading = false;
             break;
           }
@@ -183,16 +186,18 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
           pivotCol = j;
           break;
         }
-      } else if (Math.abs(matrix[i][j]) > 1e-6) {
+      } else if (Math.abs(matrix[i][j]) > EPSILON) {
         break;
       }
     }
     if (pivotCol !== -1) {
       for (let k = i - 1; k >= 0; k--) {
         const factor = matrix[k][pivotCol];
-        if (Math.abs(factor) > 1e-6) {
+        if (Math.abs(factor) > EPSILON) {
           matrix[k] = matrix[k].map((el, j) => el - factor * matrix[i][j]);
-          matrix[k] = matrix[k].map((val) => (Math.abs(val) < 1e-6 ? 0 : val));
+          matrix[k] = matrix[k].map((val) =>
+            Math.abs(val) < EPSILON ? 0 : val
+          );
           history.push(deepCopyMatrix(matrix));
         }
       }
@@ -226,7 +231,7 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
   for (let r = 0; r < numRows; r++) {
     let pivotFoundInRow = false;
     for (let c = 0; c < numCols; c++) {
-      if (Math.abs(rrefMatrix[r][c]) > 1e-6) {
+      if (Math.abs(rrefMatrix[r][c]) > EPSILON) {
         if (c < numVars) {
           pivotFoundInRow = true;
         } else {
@@ -258,10 +263,10 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
       for (let r = 0; r < rank; r++) {
         let pivotCol = -1;
         for (let c = 0; c < numVars; c++) {
-          if (Math.abs(rrefMatrix[r][c] - 1.0) < 1e-6) {
+          if (Math.abs(rrefMatrix[r][c] - 1.0) < EPSILON) {
             let isLeading = true;
             for (let k = 0; k < c; k++) {
-              if (Math.abs(rrefMatrix[r][k]) > 1e-6) {
+              if (Math.abs(rrefMatrix[r][k]) > EPSILON) {
                 isLeading = false;
                 break;
               }
@@ -270,11 +275,10 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
               pivotCol = c;
               break;
             }
-          } else if (Math.abs(rrefMatrix[r][c]) > 1e-6) {
+          } else if (Math.abs(rrefMatrix[r][c]) > EPSILON) {
             break;
           }
         }
-
         if (pivotCol === 0) x_val = rrefMatrix[r][numVars];
         else if (pivotCol === 1) y_val = rrefMatrix[r][numVars];
         else if (pivotCol === 2) z_val = rrefMatrix[r][numVars];
@@ -438,7 +442,6 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       });
     }
   },
-
   setPlaneParam: (param, value) =>
     set((s) => ({ planeParams: { ...s.planeParams, [param]: value } })),
   spawnFromEquation: () => {
@@ -504,7 +507,6 @@ const getPlaneParams = (
   const d = -normal.dot(planeObj.position);
   return { normal, d };
 };
-
 const intersectPlanePlane = (
   plane1Obj: MathObject,
   plane2Obj: MathObject
@@ -519,7 +521,7 @@ const intersectPlanePlane = (
   const d2 = p2.d;
   const lineDirection = new Vector3().crossVectors(n1, n2);
   const n1xn2MagSq = lineDirection.lengthSq();
-  if (n1xn2MagSq < 1e-6 * 1e-6) {
+  if (n1xn2MagSq < SQ_EPSILON) {
     return null;
   }
   lineDirection.normalize();
@@ -569,7 +571,7 @@ const intersectThreePlanes = (
   const n3 = p3.normal;
   const d3 = p3.d;
   const det = n1.dot(new Vector3().crossVectors(n2, n3));
-  if (Math.abs(det) < 1e-6) {
+  if (Math.abs(det) < EPSILON) {
     return null;
   }
   const n2xn3 = new Vector3().crossVectors(n2, n3);
@@ -622,7 +624,7 @@ const IntersectionLine = ({ line, label }: { line: Line3; label: string }) => {
   const lineDir = useMemo(() => {
     const dir = new Vector3().subVectors(line.end, line.start);
     const len = dir.length();
-    return len > 1e-6 ? dir.divideScalar(len) : new Vector3(1, 0, 0);
+    return len > EPSILON ? dir.divideScalar(len) : new Vector3(1, 0, 0);
   }, [line]);
   return (
     <group>
@@ -766,6 +768,7 @@ const CoordinateSystem = () => (
     <gridHelper args={[4, 20, "#555", "#333"]} position={[0, -0.01, 0]} />
   </group>
 );
+
 const PanelButton = ({
   label,
   position,
@@ -808,6 +811,7 @@ const PanelButton = ({
     </group>
   </Interactive>
 );
+
 const ValueAdjuster = ({
   label,
   value,
@@ -986,6 +990,7 @@ const ControlPanel = () => {
     </group>
   );
 };
+
 const EquationPanel = () => {
   const { planeParams, setPlaneParam, spawnFromEquation, setMode } =
     useLinePlaneStore();
@@ -1123,7 +1128,7 @@ const RrefPanel = () => {
   const panelWidth = Math.max(0.65, matrixWidth + 0.15);
   const panelHeight = 0.8;
   const formatNumberDisplay = (num: number) => {
-    if (Math.abs(num) < 1e-6) return "0";
+    if (Math.abs(num) < EPSILON) return "0";
     return num
       .toFixed(2)
       .replace(/\.00$/, "")
@@ -1441,7 +1446,7 @@ export const ARScene = () => {
           (r) =>
             r.isSolutionPoint &&
             (r.data as Vector3).distanceToSquared(rrefUniqueSolutionPoint) <
-              1e-6 * 1e-6
+              SQ_EPSILON
         );
         if (!alreadyFound) {
           results.push({
@@ -1525,11 +1530,7 @@ export const ARScene = () => {
                 )
             )}
             {intersections
-              .filter(
-                (i) =>
-                  i.type === "line" &&
-                  !intersections.some((p) => p.isSolutionPoint)
-              )
+              .filter((i) => i.type === "line")
               .map((intersection) => (
                 <IntersectionLine
                   key={intersection.id}
@@ -1566,11 +1567,7 @@ export const ARScene = () => {
               )
           )}
           {intersections
-            .filter(
-              (i) =>
-                i.type === "line" &&
-                !intersections.some((p) => p.isSolutionPoint)
-            )
+            .filter((i) => i.type === "line")
             .map((intersection) => (
               <IntersectionLine
                 key={intersection.id}
