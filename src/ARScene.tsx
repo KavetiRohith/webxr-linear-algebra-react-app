@@ -53,8 +53,10 @@ interface LinePlaneStoreState {
   selectObject: (id: string | null) => void;
   clearAll: () => void;
   setMode: (mode: "random" | "equation" | "rref") => void;
+
   setPlaneParam: (param: keyof PlaneEqParams, value: number) => void;
   spawnFromEquation: () => void;
+
   updateInitialRrefCell: (row: number, col: number, value: number) => void;
   calculateAndStartRrefViewing: () => void;
   resetRrefToEditing: () => void;
@@ -106,7 +108,6 @@ const getPlaneTransformFromRow = (
     };
   }
   normal.normalize();
-
   const D = -d_rhs;
   const position = normal.clone().multiplyScalar(-D);
   const quaternion = new Quaternion().setFromUnitVectors(
@@ -273,6 +274,7 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
             break;
           }
         }
+
         if (pivotCol === 0) x_val = rrefMatrix[r][numVars];
         else if (pivotCol === 1) y_val = rrefMatrix[r][numVars];
         else if (pivotCol === 2) z_val = rrefMatrix[r][numVars];
@@ -516,20 +518,18 @@ const intersectPlanePlane = (
   const n2 = p2.normal;
   const d2 = p2.d;
   const lineDirection = new Vector3().crossVectors(n1, n2);
-  if (lineDirection.lengthSq() < 1e-6 * 1e-6) {
+  const n1xn2MagSq = lineDirection.lengthSq();
+  if (n1xn2MagSq < 1e-6 * 1e-6) {
     return null;
   }
   lineDirection.normalize();
   let linePoint: Vector3 | null = null;
 
-  const n1xn2MagSq = new Vector3().crossVectors(n1, n2).lengthSq();
   const term1 = n2.clone().multiplyScalar(-d1);
   const term2 = n1.clone().multiplyScalar(-d2);
+  const n1xn2NonNormalized = new Vector3().crossVectors(n1, n2);
   linePoint = new Vector3()
-    .crossVectors(
-      term1.sub(term2),
-      lineDirection.clone().multiplyScalar(Math.sqrt(n1xn2MagSq))
-    )
+    .crossVectors(term1.sub(term2), n1xn2NonNormalized)
     .divideScalar(n1xn2MagSq);
 
   if (!linePoint) {
@@ -545,6 +545,47 @@ const intersectPlanePlane = (
   const endPoint = linePoint.clone().addScaledVector(lineDirection, halfLength);
   const lineSegment = new Line3(startPoint, endPoint);
   return { line: lineSegment, label: label };
+};
+
+const intersectThreePlanes = (
+  plane1Obj: MathObject,
+  plane2Obj: MathObject,
+  plane3Obj: MathObject
+): { point: Vector3; label: string } | null => {
+  if (
+    plane1Obj.type !== "plane" ||
+    plane2Obj.type !== "plane" ||
+    plane3Obj.type !== "plane"
+  )
+    return null;
+  const p1 = getPlaneParams(plane1Obj);
+  const p2 = getPlaneParams(plane2Obj);
+  const p3 = getPlaneParams(plane3Obj);
+  if (!p1 || !p2 || !p3) return null;
+  const n1 = p1.normal;
+  const d1 = p1.d;
+  const n2 = p2.normal;
+  const d2 = p2.d;
+  const n3 = p3.normal;
+  const d3 = p3.d;
+  const det = n1.dot(new Vector3().crossVectors(n2, n3));
+  if (Math.abs(det) < 1e-6) {
+    return null;
+  }
+  const n2xn3 = new Vector3().crossVectors(n2, n3);
+  const n3xn1 = new Vector3().crossVectors(n3, n1);
+  const n1xn2 = new Vector3().crossVectors(n1, n2);
+  const term1 = n2xn3.multiplyScalar(-d1);
+  const term2 = n3xn1.multiplyScalar(-d2);
+  const term3 = n1xn2.multiplyScalar(-d3);
+  const intersectionPoint = new Vector3()
+    .add(term1)
+    .add(term2)
+    .add(term3)
+    .divideScalar(det);
+  const p = intersectionPoint;
+  const label = `Intersection: (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+  return { point: p, label: label };
 };
 
 const IntersectionPoint = ({
@@ -639,12 +680,12 @@ const MathPlane = ({
       updateObjectPosition(id, e.point);
     }
   };
-  const handlePointerUp = () => {
+  const handlePointerUp = (_e: any) => {
     if (isDraggingRef.current) {
       isDraggingRef.current = false;
     }
   };
-  const handlePointerLeave = () => {
+  const handlePointerLeave = (_e: any) => {
     if (isDraggingRef.current) {
       isDraggingRef.current = false;
     }
@@ -982,8 +1023,8 @@ const EquationPanel = () => {
         <ValueAdjuster
           label="nX"
           value={planeParams.nX}
-          min={-1}
-          max={1}
+          min={-10}
+          max={10}
           onChange={setPlaneParam}
           paramKey="nX"
           yPos={0.09}
@@ -991,8 +1032,8 @@ const EquationPanel = () => {
         <ValueAdjuster
           label="nY"
           value={planeParams.nY}
-          min={-1}
-          max={1}
+          min={-10}
+          max={10}
           onChange={setPlaneParam}
           paramKey="nY"
           yPos={0.04}
@@ -1000,8 +1041,8 @@ const EquationPanel = () => {
         <ValueAdjuster
           label="nZ"
           value={planeParams.nZ}
-          min={-1}
-          max={1}
+          min={-10}
+          max={10}
           onChange={setPlaneParam}
           paramKey="nZ"
           yPos={-0.01}
@@ -1017,8 +1058,8 @@ const EquationPanel = () => {
         <ValueAdjuster
           label="d"
           value={planeParams.d}
-          min={-5}
-          max={5}
+          min={-10}
+          max={10}
           onChange={setPlaneParam}
           paramKey="d"
           yPos={-0.1}
@@ -1339,6 +1380,7 @@ export const ARScene = () => {
       type: "point" | "line";
       data: Vector3 | Line3;
       label: string;
+      isSolutionPoint?: boolean;
     };
     const results: IntersectionResult[] = [];
     if (mode === "rref") {
@@ -1353,45 +1395,111 @@ export const ARScene = () => {
           color: "",
           equation: "",
         }));
+
       for (let i = 0; i < planesToIntersect.length; i++) {
         for (let j = i + 1; j < planesToIntersect.length; j++) {
           const obj1 = planesToIntersect[i];
           const obj2 = planesToIntersect[j];
           const pairId = `${obj1.id}-${obj2.id}`;
-          let intersectionCalcResult = intersectPlanePlane(obj1, obj2);
-          if (intersectionCalcResult && "line" in intersectionCalcResult) {
+          let intersectionLine = intersectPlanePlane(obj1, obj2);
+          if (intersectionLine) {
             results.push({
               id: `${pairId}-l`,
               type: "line",
-              data: intersectionCalcResult.line,
-              label: intersectionCalcResult.label,
+              data: intersectionLine.line,
+              label: intersectionLine.label,
             });
           }
+        }
+      }
+
+      if (planesToIntersect.length >= 3) {
+        for (let i = 0; i < planesToIntersect.length; i++) {
+          for (let j = i + 1; j < planesToIntersect.length; j++) {
+            for (let k = j + 1; k < planesToIntersect.length; k++) {
+              const obj1 = planesToIntersect[i];
+              const obj2 = planesToIntersect[j];
+              const obj3 = planesToIntersect[k];
+              const tripletId = `${obj1.id}-${obj2.id}-${obj3.id}`;
+              let intersectionPoint = intersectThreePlanes(obj1, obj2, obj3);
+              if (intersectionPoint) {
+                results.push({
+                  id: `${tripletId}-p`,
+                  type: "point",
+                  data: intersectionPoint.point,
+                  label: "3-Plane Intersection",
+                  isSolutionPoint: true,
+                });
+              }
+            }
+          }
+        }
+      }
+
+      if (rrefAnalysis?.solutionType === "unique" && rrefUniqueSolutionPoint) {
+        const alreadyFound = results.some(
+          (r) =>
+            r.isSolutionPoint &&
+            (r.data as Vector3).distanceToSquared(rrefUniqueSolutionPoint) <
+              1e-6 * 1e-6
+        );
+        if (!alreadyFound) {
+          results.push({
+            id: "rref-solution-pt",
+            type: "point",
+            data: rrefUniqueSolutionPoint,
+            label: "RREF Solution",
+            isSolutionPoint: true,
+          });
         }
       }
     } else {
       const visiblePlanes = objects.filter(
         (o) => o.visible && o.type === "plane"
       );
+
       for (let i = 0; i < visiblePlanes.length; i++) {
         for (let j = i + 1; j < visiblePlanes.length; j++) {
           const obj1 = visiblePlanes[i];
           const obj2 = visiblePlanes[j];
           const pairId = `${obj1.id}-${obj2.id}`;
-          let intersectionCalcResult = intersectPlanePlane(obj1, obj2);
-          if (intersectionCalcResult && "line" in intersectionCalcResult) {
+          let intersectionLine = intersectPlanePlane(obj1, obj2);
+          if (intersectionLine) {
             results.push({
               id: `${pairId}-l`,
               type: "line",
-              data: intersectionCalcResult.line,
-              label: intersectionCalcResult.label,
+              data: intersectionLine.line,
+              label: intersectionLine.label,
             });
+          }
+        }
+      }
+
+      if (visiblePlanes.length >= 3) {
+        for (let i = 0; i < visiblePlanes.length; i++) {
+          for (let j = i + 1; j < visiblePlanes.length; j++) {
+            for (let k = j + 1; k < visiblePlanes.length; k++) {
+              const obj1 = visiblePlanes[i];
+              const obj2 = visiblePlanes[j];
+              const obj3 = visiblePlanes[k];
+              const tripletId = `${obj1.id}-${obj2.id}-${obj3.id}`;
+              let intersectionPoint = intersectThreePlanes(obj1, obj2, obj3);
+              if (intersectionPoint) {
+                results.push({
+                  id: `${tripletId}-p`,
+                  type: "point",
+                  data: intersectionPoint.point,
+                  label: "3-Plane Intersection",
+                  isSolutionPoint: true,
+                });
+              }
+            }
           }
         }
       }
     }
     return results;
-  }, [mode, objects, rrefPlaneData]);
+  }, [mode, objects, rrefPlaneData, rrefAnalysis, rrefUniqueSolutionPoint]);
 
   return (
     <>
@@ -1417,7 +1525,11 @@ export const ARScene = () => {
                 )
             )}
             {intersections
-              .filter((i) => i.type === "line")
+              .filter(
+                (i) =>
+                  i.type === "line" &&
+                  !intersections.some((p) => p.isSolutionPoint)
+              )
               .map((intersection) => (
                 <IntersectionLine
                   key={intersection.id}
@@ -1425,14 +1537,15 @@ export const ARScene = () => {
                   label={intersection.label}
                 />
               ))}
-            {rrefAnalysis?.solutionType === "unique" &&
-              rrefUniqueSolutionPoint && (
+            {intersections
+              .filter((i) => i.type === "point")
+              .map((intersection) => (
                 <IntersectionPoint
-                  key="rref-solution-point"
-                  position={rrefUniqueSolutionPoint}
-                  label={"Solution"}
+                  key={intersection.id}
+                  position={intersection.data as Vector3}
+                  label={intersection.label}
                 />
-              )}
+              ))}
           </group>
           <RrefPanel />
         </>
@@ -1453,11 +1566,24 @@ export const ARScene = () => {
               )
           )}
           {intersections
-            .filter((i) => i.type === "line")
+            .filter(
+              (i) =>
+                i.type === "line" &&
+                !intersections.some((p) => p.isSolutionPoint)
+            )
             .map((intersection) => (
               <IntersectionLine
                 key={intersection.id}
                 line={intersection.data as Line3}
+                label={intersection.label}
+              />
+            ))}
+          {intersections
+            .filter((i) => i.type === "point")
+            .map((intersection) => (
+              <IntersectionPoint
+                key={intersection.id}
+                position={intersection.data as Vector3}
                 label={intersection.label}
               />
             ))}
