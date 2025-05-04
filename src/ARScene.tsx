@@ -586,7 +586,7 @@ const intersectThreePlanes = (
     .add(term3)
     .divideScalar(det);
   const p = intersectionPoint;
-  const label = `Intersection: (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+  const label = `(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
   return { point: p, label: label };
 };
 
@@ -1388,121 +1388,85 @@ export const ARScene = () => {
       isSolutionPoint?: boolean;
     };
     const results: IntersectionResult[] = [];
-    if (mode === "rref") {
-      const planesToIntersect = rrefPlaneData
-        .filter((pd) => pd.isValid)
-        .map((pd) => ({
-          id: pd.id,
-          type: "plane" as const,
-          position: pd.position,
-          rotation: pd.rotation,
-          visible: true,
-          color: "",
-          equation: "",
-        }));
 
-      for (let i = 0; i < planesToIntersect.length; i++) {
-        for (let j = i + 1; j < planesToIntersect.length; j++) {
-          const obj1 = planesToIntersect[i];
-          const obj2 = planesToIntersect[j];
-          const pairId = `${obj1.id}-${obj2.id}`;
-          let intersectionLine = intersectPlanePlane(obj1, obj2);
-          if (intersectionLine) {
-            results.push({
-              id: `${pairId}-l`,
-              type: "line",
-              data: intersectionLine.line,
-              label: intersectionLine.label,
-            });
-          }
-        }
-      }
+    // determine the list of planes to work with based on mode
+    const activePlanes =
+      mode === "rref"
+        ? rrefPlaneData
+            .filter((pd) => pd.isValid)
+            .map((pd) => ({
+              id: pd.id,
+              type: "plane" as const,
+              position: pd.position,
+              rotation: pd.rotation,
+              visible: true,
+              color: "",
+              equation: "",
+            }))
+        : objects.filter((o) => o.visible && o.type === "plane");
 
-      if (planesToIntersect.length >= 3) {
-        for (let i = 0; i < planesToIntersect.length; i++) {
-          for (let j = i + 1; j < planesToIntersect.length; j++) {
-            for (let k = j + 1; k < planesToIntersect.length; k++) {
-              const obj1 = planesToIntersect[i];
-              const obj2 = planesToIntersect[j];
-              const obj3 = planesToIntersect[k];
-              const tripletId = `${obj1.id}-${obj2.id}-${obj3.id}`;
-              let intersectionPoint = intersectThreePlanes(obj1, obj2, obj3);
-              if (intersectionPoint) {
-                results.push({
-                  id: `${tripletId}-p`,
-                  type: "point",
-                  data: intersectionPoint.point,
-                  label: "3-Plane Intersection",
-                  isSolutionPoint: true,
-                });
-              }
-            }
-          }
-        }
-      }
-
-      if (rrefAnalysis?.solutionType === "unique" && rrefUniqueSolutionPoint) {
-        const alreadyFound = results.some(
-          (r) =>
-            r.isSolutionPoint &&
-            (r.data as Vector3).distanceToSquared(rrefUniqueSolutionPoint) <
-              SQ_EPSILON
-        );
-        if (!alreadyFound) {
+    for (let i = 0; i < activePlanes.length; i++) {
+      for (let j = i + 1; j < activePlanes.length; j++) {
+        const obj1 = activePlanes[i];
+        const obj2 = activePlanes[j];
+        const pairId = `${obj1.id}-${obj2.id}`;
+        let intersectionLine = intersectPlanePlane(obj1, obj2);
+        if (intersectionLine) {
           results.push({
-            id: "rref-solution-pt",
-            type: "point",
-            data: rrefUniqueSolutionPoint,
-            label: "RREF Solution",
-            isSolutionPoint: true,
+            id: `${pairId}-l`,
+            type: "line",
+            data: intersectionLine.line,
+            label: intersectionLine.label,
           });
         }
       }
-    } else {
-      const visiblePlanes = objects.filter(
-        (o) => o.visible && o.type === "plane"
-      );
+    }
 
-      for (let i = 0; i < visiblePlanes.length; i++) {
-        for (let j = i + 1; j < visiblePlanes.length; j++) {
-          const obj1 = visiblePlanes[i];
-          const obj2 = visiblePlanes[j];
-          const pairId = `${obj1.id}-${obj2.id}`;
-          let intersectionLine = intersectPlanePlane(obj1, obj2);
-          if (intersectionLine) {
-            results.push({
-              id: `${pairId}-l`,
-              type: "line",
-              data: intersectionLine.line,
-              label: intersectionLine.label,
-            });
-          }
-        }
-      }
-
-      if (visiblePlanes.length >= 3) {
-        for (let i = 0; i < visiblePlanes.length; i++) {
-          for (let j = i + 1; j < visiblePlanes.length; j++) {
-            for (let k = j + 1; k < visiblePlanes.length; k++) {
-              const obj1 = visiblePlanes[i];
-              const obj2 = visiblePlanes[j];
-              const obj3 = visiblePlanes[k];
-              const tripletId = `${obj1.id}-${obj2.id}-${obj3.id}`;
-              let intersectionPoint = intersectThreePlanes(obj1, obj2, obj3);
-              if (intersectionPoint) {
-                results.push({
-                  id: `${tripletId}-p`,
-                  type: "point",
-                  data: intersectionPoint.point,
-                  label: "3-Plane Intersection",
-                  isSolutionPoint: true,
-                });
-              }
+    if (activePlanes.length >= 3) {
+      for (let i = 0; i < activePlanes.length; i++) {
+        for (let j = i + 1; j < activePlanes.length; j++) {
+          for (let k = j + 1; k < activePlanes.length; k++) {
+            const obj1 = activePlanes[i];
+            const obj2 = activePlanes[j];
+            const obj3 = activePlanes[k];
+            const tripletId = `${obj1.id}-${obj2.id}-${obj3.id}`;
+            let intersectionPoint = intersectThreePlanes(obj1, obj2, obj3);
+            if (intersectionPoint) {
+              results.push({
+                id: `${tripletId}-p`,
+                type: "point",
+                data: intersectionPoint.point,
+                label: intersectionPoint.label,
+                isSolutionPoint: true,
+              });
             }
           }
         }
       }
     }
+
+    if (
+      mode === "rref" &&
+      rrefAnalysis?.solutionType === "unique" &&
+      rrefUniqueSolutionPoint
+    ) {
+      const alreadyFound = results.some(
+        (r) =>
+          r.isSolutionPoint &&
+          (r.data as Vector3).distanceToSquared(rrefUniqueSolutionPoint) <
+            SQ_EPSILON
+      );
+      if (!alreadyFound) {
+        results.push({
+          id: "rref-solution-pt",
+          type: "point",
+          data: rrefUniqueSolutionPoint,
+          label: `(${rrefUniqueSolutionPoint.x.toFixed(2)}, ${rrefUniqueSolutionPoint.y.toFixed(2)}, ${rrefUniqueSolutionPoint.z.toFixed(2)})`, // Use RREF analysis point coords for label
+          isSolutionPoint: true,
+        });
+      }
+    }
+
     return results;
   }, [mode, objects, rrefPlaneData, rrefAnalysis, rrefUniqueSolutionPoint]);
 
@@ -1514,6 +1478,7 @@ export const ARScene = () => {
 
       {mode === "rref" ? (
         <>
+          {/* RREF Visualization Group */}
           <group scale={[rrefScale, rrefScale, rrefScale]}>
             {rrefPlaneData.map(
               (plane) =>
@@ -1529,6 +1494,7 @@ export const ARScene = () => {
                   />
                 )
             )}
+            {/* Render Intersections - Always show lines and points */}
             {intersections
               .filter((i) => i.type === "line")
               .map((intersection) => (
@@ -1552,6 +1518,7 @@ export const ARScene = () => {
         </>
       ) : (
         <>
+          {/* Render general Math Objects */}
           {objects.map(
             (object) =>
               object.visible &&
@@ -1566,6 +1533,7 @@ export const ARScene = () => {
                 />
               )
           )}
+          {/* Render general Intersections */}
           {intersections
             .filter((i) => i.type === "line")
             .map((intersection) => (
@@ -1584,6 +1552,7 @@ export const ARScene = () => {
                 label={intersection.label}
               />
             ))}
+          {/* Render appropriate Control Panel */}
           {mode === "random" ? <ControlPanel /> : <EquationPanel />}
         </>
       )}
