@@ -5,9 +5,6 @@ import { Vector3, Euler, Quaternion, Mesh, Line3 } from "three";
 import { create } from "zustand";
 import { generateUUID } from "three/src/math/MathUtils.js";
 
-const EPSILON = 1e-6;
-const SQ_EPSILON = EPSILON * EPSILON;
-
 interface MathObject {
   id: string;
   type: "plane";
@@ -79,7 +76,7 @@ const getPlaneTransform = (
   params: PlaneEqParams
 ): { position: Vector3; rotation: Euler } => {
   const normal = new Vector3(params.nX, params.nY, params.nZ);
-  if (normal.lengthSq() < SQ_EPSILON) normal.set(0, 1, 0);
+  if (normal.lengthSq() < 1e-6 * 1e-6) normal.set(0, 1, 0);
   normal.normalize();
   const position = normal.clone().multiplyScalar(-params.d);
   const quaternion = new Quaternion().setFromUnitVectors(
@@ -100,8 +97,8 @@ const getPlaneTransformFromRow = (
   const d_rhs = row[3];
   const normal = new Vector3(a, b, c);
   const normalLenSq = normal.lengthSq();
-  if (normalLenSq < SQ_EPSILON) {
-    const isValid = Math.abs(d_rhs) < EPSILON;
+  if (normalLenSq < 1e-6 * 1e-6) {
+    const isValid = Math.abs(d_rhs) < 1e-6;
     return {
       position: new Vector3(0, -999, 0),
       rotation: new Euler(),
@@ -140,7 +137,7 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
         maxRow = k;
       }
     }
-    if (Math.abs(matrix[maxRow][pivotCol]) < EPSILON) {
+    if (Math.abs(matrix[maxRow][pivotCol]) < 1e-6) {
       continue;
     }
     if (maxRow !== pivotRow) {
@@ -148,23 +145,21 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
       history.push(deepCopyMatrix(matrix));
     }
     const pivotValue = matrix[pivotRow][pivotCol];
-    if (Math.abs(pivotValue - 1.0) > EPSILON) {
+    if (Math.abs(pivotValue - 1.0) > 1e-6) {
       matrix[pivotRow] = matrix[pivotRow].map((el) => el / pivotValue);
       matrix[pivotRow] = matrix[pivotRow].map((val) =>
-        Math.abs(val) < EPSILON ? 0 : val
+        Math.abs(val) < 1e-6 ? 0 : val
       );
       history.push(deepCopyMatrix(matrix));
     }
     for (let i = 0; i < numRows; i++) {
       if (i !== pivotRow) {
         const factor = matrix[i][pivotCol];
-        if (Math.abs(factor) > EPSILON) {
+        if (Math.abs(factor) > 1e-6) {
           matrix[i] = matrix[i].map(
             (el, j) => el - factor * matrix[pivotRow][j]
           );
-          matrix[i] = matrix[i].map((val) =>
-            Math.abs(val) < EPSILON ? 0 : val
-          );
+          matrix[i] = matrix[i].map((val) => (Math.abs(val) < 1e-6 ? 0 : val));
           history.push(deepCopyMatrix(matrix));
         }
       }
@@ -175,10 +170,10 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
   for (let i = numRows - 1; i >= 0; i--) {
     let pivotCol = -1;
     for (let j = 0; j < numCols - 1; j++) {
-      if (Math.abs(matrix[i][j] - 1.0) < EPSILON) {
+      if (Math.abs(matrix[i][j] - 1.0) < 1e-6) {
         let isLeading = true;
         for (let k = 0; k < j; k++) {
-          if (Math.abs(matrix[i][k]) > EPSILON) {
+          if (Math.abs(matrix[i][k]) > 1e-6) {
             isLeading = false;
             break;
           }
@@ -187,18 +182,16 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
           pivotCol = j;
           break;
         }
-      } else if (Math.abs(matrix[i][j]) > EPSILON) {
+      } else if (Math.abs(matrix[i][j]) > 1e-6) {
         break;
       }
     }
     if (pivotCol !== -1) {
       for (let k = i - 1; k >= 0; k--) {
         const factor = matrix[k][pivotCol];
-        if (Math.abs(factor) > EPSILON) {
+        if (Math.abs(factor) > 1e-6) {
           matrix[k] = matrix[k].map((el, j) => el - factor * matrix[i][j]);
-          matrix[k] = matrix[k].map((val) =>
-            Math.abs(val) < EPSILON ? 0 : val
-          );
+          matrix[k] = matrix[k].map((val) => (Math.abs(val) < 1e-6 ? 0 : val));
           history.push(deepCopyMatrix(matrix));
         }
       }
@@ -232,7 +225,7 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
   for (let r = 0; r < numRows; r++) {
     let pivotFoundInRow = false;
     for (let c = 0; c < numCols; c++) {
-      if (Math.abs(rrefMatrix[r][c]) > EPSILON) {
+      if (Math.abs(rrefMatrix[r][c]) > 1e-6) {
         if (c < numVars) {
           pivotFoundInRow = true;
         } else {
@@ -264,10 +257,10 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
       for (let r = 0; r < rank; r++) {
         let pivotCol = -1;
         for (let c = 0; c < numVars; c++) {
-          if (Math.abs(rrefMatrix[r][c] - 1.0) < EPSILON) {
+          if (Math.abs(rrefMatrix[r][c] - 1.0) < 1e-6) {
             let isLeading = true;
             for (let k = 0; k < c; k++) {
-              if (Math.abs(rrefMatrix[r][k]) > EPSILON) {
+              if (Math.abs(rrefMatrix[r][k]) > 1e-6) {
                 isLeading = false;
                 break;
               }
@@ -276,7 +269,7 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
               pivotCol = c;
               break;
             }
-          } else if (Math.abs(rrefMatrix[r][c]) > EPSILON) {
+          } else if (Math.abs(rrefMatrix[r][c]) > 1e-6) {
             break;
           }
         }
@@ -523,7 +516,7 @@ const intersectPlanePlane = (
   const n2 = p2.normal;
   const d2 = p2.d;
   const lineDirection = new Vector3().crossVectors(n1, n2);
-  if (lineDirection.lengthSq() < SQ_EPSILON) {
+  if (lineDirection.lengthSq() < 1e-6 * 1e-6) {
     return null;
   }
   lineDirection.normalize();
@@ -588,7 +581,7 @@ const IntersectionLine = ({ line, label }: { line: Line3; label: string }) => {
   const lineDir = useMemo(() => {
     const dir = new Vector3().subVectors(line.end, line.start);
     const len = dir.length();
-    return len > EPSILON ? dir.divideScalar(len) : new Vector3(1, 0, 0);
+    return len > 1e-6 ? dir.divideScalar(len) : new Vector3(1, 0, 0);
   }, [line]);
   return (
     <group>
@@ -1093,7 +1086,7 @@ const RrefPanel = () => {
   const panelWidth = Math.max(0.65, matrixWidth + 0.15);
   const panelHeight = 0.8;
   const formatNumberDisplay = (num: number) => {
-    if (Math.abs(num) < EPSILON) return "0";
+    if (Math.abs(num) < 1e-6) return "0";
     return num
       .toFixed(2)
       .replace(/\.00$/, "")
