@@ -6,7 +6,6 @@ import { create } from "zustand";
 import { generateUUID } from "three/src/math/MathUtils.js";
 
 const EPSILON = 1e-6;
-const SQ_EPSILON = EPSILON * EPSILON;
 
 interface MathObject {
   id: string;
@@ -91,7 +90,7 @@ const getPlaneTransform = (
   const d_rhs = params.paramD;
   const normalLenSq = normal.lengthSq();
 
-  if (normalLenSq < SQ_EPSILON) {
+  if (normalLenSq < EPSILON) {
     console.warn(
       "Degenerate plane definition (zero normal). Positioning arbitrarily."
     );
@@ -122,7 +121,7 @@ const getPlaneTransformFromRow = (
   const normal = new Vector3(a, b, c);
   const normalLenSq = normal.lengthSq();
 
-  if (normalLenSq < SQ_EPSILON) {
+  if (normalLenSq < EPSILON) {
     const isValid = Math.abs(d_rhs) < EPSILON;
     return {
       position: new Vector3(0, -999, 0),
@@ -564,7 +563,7 @@ const intersectPlanePlane = (
 
   const lineDirection = new Vector3().crossVectors(n1, n2);
   const n1xn2MagSq = lineDirection.lengthSq();
-  if (n1xn2MagSq < SQ_EPSILON) {
+  if (n1xn2MagSq < EPSILON) {
     return null;
   }
   lineDirection.normalize();
@@ -1496,7 +1495,7 @@ export const ARScene = () => {
         (r) =>
           r.isSolutionPoint &&
           (r.data as Vector3).distanceToSquared(rrefUniqueSolutionPoint) <
-            SQ_EPSILON
+            EPSILON
       );
       if (!alreadyFound) {
         results.push({
