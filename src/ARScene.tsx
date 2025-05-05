@@ -1,12 +1,28 @@
+// ARScene.tsx - Final Complete Code v9 (Plane-Only, Consistent Equation Form, RREF Fixes)
+// Uses ax + by + cz = d consistently where definition occurs.
+// Fixes RREF intersection point movement & random spawning on mode change.
+// ----------------------------------------------------------------------------------------------------------
 import { useRef, useEffect, useMemo } from "react";
 import { Text, Line } from "@react-three/drei";
 import { Interactive } from "@react-three/xr";
-import { Vector3, Euler, Quaternion, Mesh, Line3 } from "three";
+import {
+  Vector3,
+  Euler,
+  Quaternion,
+  Mesh,
+  Line3,
+} from "three";
 import { create } from "zustand";
 import { generateUUID } from "three/src/math/MathUtils.js";
 
+// --- Constants ---
 const EPSILON = 1e-6;
+const SQ_EPSILON = EPSILON * EPSILON;
 
+/*************************
+ * 1. Zustand Store & Helpers (Plane-Only Version)
+ *************************/
+// --- Interfaces ---
 interface MathObject {
   id: string;
   type: "plane";
@@ -16,15 +32,15 @@ interface MathObject {
   equation: string;
   visible: boolean;
 }
-
+// Represents parameters for ax + by + cz = d
 interface PlaneEqParams {
-  paramA: number;
-  paramB: number;
-  paramC: number;
-  paramD: number;
+  paramA: number; // Coefficient a
+  paramB: number; // Coefficient b
+  paramC: number; // Coefficient c
+  paramD: number; // Constant d (rhs)
 }
 
-type Matrix = number[][];
+type Matrix = number[][]; // Represents augmented matrix [A|b] for Ax=b
 type RrefModeState = "editing" | "viewing";
 
 type RrefAnalysisResult = {
@@ -38,7 +54,7 @@ interface LinePlaneStoreState {
   objects: MathObject[];
   selectedObjectId: string | null;
   mode: "random" | "equation" | "rref";
-  planeParams: PlaneEqParams;
+  planeParams: PlaneEqParams; // Renamed params
 
   initialRrefMatrix: Matrix;
   rrefHistory: Matrix[];
@@ -51,14 +67,14 @@ interface LinePlaneStoreState {
     position?: Vector3,
     rotation?: Euler,
     params?: PlaneEqParams
-  ) => void;
+  ) => void; // Allow passing params
   removeObject: (id: string) => void;
   updateObjectPosition: (id: string, position: Vector3) => void;
-  updateEquation: (id: string) => void;
+  updateEquation: (id: string) => void; // Calculates ax+by+cz=d from geometry
   selectObject: (id: string | null) => void;
   clearAll: () => void;
   setMode: (mode: "random" | "equation" | "rref") => void;
-  setPlaneParam: (param: keyof PlaneEqParams, value: number) => void;
+  setPlaneParam: (param: keyof PlaneEqParams, value: number) => void; // Uses renamed keys
   spawnFromEquation: () => void;
 
   updateInitialRrefCell: (row: number, col: number, value: number) => void;
@@ -67,6 +83,8 @@ interface LinePlaneStoreState {
   stepRrefHistory: (direction: "back" | "forward") => void;
 }
 
+// --- Defaults & Helpers ---
+// Default plane params represent y=1 (0x + 1y + 0z = 1)
 const defaultPlaneParams: PlaneEqParams = {
   paramA: 0,
   paramB: 1,
@@ -74,15 +92,17 @@ const defaultPlaneParams: PlaneEqParams = {
   paramD: 1,
 };
 
+// Sample matrix for RREF [A|b] representing ax+by+cz=d
 const sampleMatrix: Matrix = [
-  [1, 2, -1, 3],
-  [2, 1, 1, 3],
-  [1, 1, 1, 2],
+  [1, 1, 1, 2], // x + y + z = 2
+  [2, 1, 1, 3], // 2x + y + z = 3
+  [1, 2, -1, 3], // x + 2y - z = 3 -> Solution (1,1,0)
 ];
 
 const deepCopyMatrix = (matrix: Matrix): Matrix =>
   matrix.map((row) => [...row]);
 
+// Calculates position/rotation based on ax + by + cz = d parameters
 const getPlaneTransform = (
   params: PlaneEqParams
 ): { position: Vector3; rotation: Euler } => {
@@ -90,18 +110,19 @@ const getPlaneTransform = (
   const d_rhs = params.paramD;
   const normalLenSq = normal.lengthSq();
 
-  if (normalLenSq < EPSILON) {
+  if (normalLenSq < SQ_EPSILON) {
+    // Handle degenerate case (0=d)
     console.warn(
       "Degenerate plane definition (zero normal). Positioning arbitrarily."
     );
-
+    // Place it somewhere distinct, maybe based on d_rhs? For now, far away.
     return { position: new Vector3(0, -999 + d_rhs, 0), rotation: new Euler() };
   }
 
   const normalNormalized = normal.clone().normalize();
-
+  // Point on plane closest to origin: P = (d_rhs / |N|^2) * N
   const position = normal.clone().multiplyScalar(d_rhs / normalLenSq);
-
+  // Rotation aligns default Z normal with our calculated normal
   const quaternion = new Quaternion().setFromUnitVectors(
     new Vector3(0, 0, 1),
     normalNormalized
@@ -110,6 +131,7 @@ const getPlaneTransform = (
   return { position, rotation };
 };
 
+// Calculates position/rotation for a plane from RREF matrix row [a, b, c, d] (ax+by+cz=d)
 const getPlaneTransformFromRow = (
   row: number[]
 ): { position: Vector3; rotation: Euler; isValid: boolean } | null => {
@@ -121,8 +143,9 @@ const getPlaneTransformFromRow = (
   const normal = new Vector3(a, b, c);
   const normalLenSq = normal.lengthSq();
 
-  if (normalLenSq < EPSILON) {
-    const isValid = Math.abs(d_rhs) < EPSILON;
+  if (normalLenSq < SQ_EPSILON) {
+    // Degenerate plane 0 = d_rhs
+    const isValid = Math.abs(d_rhs) < EPSILON; // Check if 0 = 0
     return {
       position: new Vector3(0, -999, 0),
       rotation: new Euler(),
@@ -131,7 +154,7 @@ const getPlaneTransformFromRow = (
   }
 
   const normalNormalized = normal.clone().normalize();
-
+  // Point on plane closest to origin: P = (d_rhs / |N|^2) * N
   const position = normal.clone().multiplyScalar(d_rhs / normalLenSq);
   const quaternion = new Quaternion().setFromUnitVectors(
     new Vector3(0, 0, 1),
@@ -141,6 +164,7 @@ const getPlaneTransformFromRow = (
   return { position, rotation, isValid: true };
 };
 
+/** Calculates RREF steps, returning history array */
 const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
   const history: Matrix[] = [deepCopyMatrix(initialMatrix)];
   let matrix = deepCopyMatrix(initialMatrix);
@@ -228,6 +252,7 @@ const calculateRrefSteps = (initialMatrix: Matrix): Matrix[] => {
   return history;
 };
 
+/** Analyzes RREF matrix for consistency and solution type. */
 const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
   const numRows = rrefMatrix.length;
   if (numRows === 0)
@@ -349,11 +374,13 @@ const analyzeRref = (rrefMatrix: Matrix): RrefAnalysisResult => {
   }
 };
 
+// --- Zustand Store Hook ---
 export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
+  // --- Initial State ---
   objects: [],
   selectedObjectId: null,
   mode: "random",
-  planeParams: { ...defaultPlaneParams },
+  planeParams: { ...defaultPlaneParams }, // Use renamed default
   initialRrefMatrix: deepCopyMatrix(sampleMatrix),
   rrefHistory: [],
   rrefStepIndex: -1,
@@ -361,19 +388,23 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
   rrefAnalysis: null,
   rrefUniqueSolutionPoint: null,
 
+  // --- Actions ---
+  // Modified addPlane to optionally accept params for consistent creation logic
   addPlane: (position?: Vector3, rotation?: Euler, params?: PlaneEqParams) => {
     let pos = position;
     let rot = rotation;
-    let eq = "";
+    let eq = ""; // Initial equation placeholder
 
     if (params) {
+      // If params are provided, calculate transform from them
       const transform = getPlaneTransform(params);
       pos = transform.position;
       rot = transform.rotation;
-
+      // Generate equation string directly from params
       const formatNum = (n: number) => n.toFixed(1).replace(".0", "");
       eq = `${formatNum(params.paramA)}x + ${formatNum(params.paramB)}y + ${formatNum(params.paramC)}z = ${formatNum(params.paramD)}`;
     } else {
+      // If no params, generate random transform
       pos ||= new Vector3(
         Math.random() * 2 - 1,
         Math.random() * 1.5,
@@ -393,14 +424,14 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
       position: pos.clone(),
       rotation: rot.clone(),
       color: `hsl(${Math.floor(Math.random() * 360)}, 70%, 50%)`,
-      equation: eq,
+      equation: eq, // Use generated eq if params provided
       visible: true,
     };
     set((state) => ({
       objects: [...state.objects, plane],
       selectedObjectId: id,
     }));
-
+    // If equation wasn't set from params, calculate it from geometry now
     if (!eq) {
       get().updateEquation(id);
     }
@@ -420,13 +451,13 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
     }));
     get().updateEquation(id);
   },
-
+  // updateEquation now calculates ax+by+cz=d from geometry
   updateEquation: (id) => {
     const object = get().objects.find((obj) => obj.id === id);
     if (!object || object.type !== "plane") return;
     let equation = "";
-    const normal = new Vector3(0, 0, 1).applyEuler(object.rotation).normalize();
-
+    const normal = new Vector3(0, 0, 1).applyEuler(object.rotation).normalize(); // N
+    // d_rhs = N · P (where P is the position)
     const d_rhs = normal.dot(object.position);
     const a = normal.x;
     const b = normal.y;
@@ -443,8 +474,8 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
 
     let eq =
       `${formatCoeff(a, "x")}${formatCoeff(b, "y")}${formatCoeff(c, "z")}`.trim();
-    if (eq.startsWith("+ ")) eq = eq.substring(2);
-    if (eq === "") eq = "0";
+    if (eq.startsWith("+ ")) eq = eq.substring(2); // Remove leading +
+    if (eq === "") eq = "0"; // Handle zero vector case
 
     equation = `${eq} = ${formatD(d_rhs)}`;
 
@@ -482,13 +513,13 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
     }
   },
   setPlaneParam: (param, value) =>
-    set((s) => ({ planeParams: { ...s.planeParams, [param]: value } })),
+    set((s) => ({ planeParams: { ...s.planeParams, [param]: value } })), // Uses renamed keys: paramA, paramB, etc.
   spawnFromEquation: () => {
     const { planeParams, addPlane } = get();
-
+    // Pass the params directly to addPlane, which now handles the transform calculation
     addPlane(undefined, undefined, planeParams);
   },
-
+  // RREF Actions (Unchanged)
   updateInitialRrefCell: (row, col, value) => {
     const currentMatrix = get().initialRrefMatrix;
     if (
@@ -537,13 +568,18 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
     }
   },
 }));
+// --- END OF STORE ---
 
+/*************************
+ * Intersection Math Helpers (Plane-Only)
+ *************************/
+// Helper now returns N and D for N.X+D=0, derived from plane's geometry
 const getPlaneParamsIntersection = (
   planeObj: MathObject
 ): { normal: Vector3; constantD: number } | null => {
   if (planeObj.type !== "plane") return null;
   const normal = new Vector3(0, 0, 1).applyEuler(planeObj.rotation).normalize();
-  const D = -normal.dot(planeObj.position);
+  const D = -normal.dot(planeObj.position); // D for N.X+D=0
   return { normal, constantD: D };
 };
 
@@ -552,7 +588,7 @@ const intersectPlanePlane = (
   plane2Obj: MathObject
 ): { line: Line3; label: string } | null => {
   if (plane1Obj.type !== "plane" || plane2Obj.type !== "plane") return null;
-
+  // Use the geometric parameters (N, D for N.X+D=0) for intersection calculation
   const p1Geom = getPlaneParamsIntersection(plane1Obj);
   const p2Geom = getPlaneParamsIntersection(plane2Obj);
   if (!p1Geom || !p2Geom) return null;
@@ -563,15 +599,16 @@ const intersectPlanePlane = (
 
   const lineDirection = new Vector3().crossVectors(n1, n2);
   const n1xn2MagSq = lineDirection.lengthSq();
-  if (n1xn2MagSq < EPSILON) {
+  if (n1xn2MagSq < SQ_EPSILON) {
     return null;
-  }
+  } // Parallel or Coincident
   lineDirection.normalize();
 
+  // Use robust formula P = ( (d1*N2 - d2*N1) x (N1xN2) ) / |N1xN2|^2 where d is constant in N.X+d=0
   let linePoint: Vector3 | null = null;
-  const n1xn2NonNormalized = new Vector3().crossVectors(n1, n2);
-  const term1 = n2.clone().multiplyScalar(-D1);
-  const term2 = n1.clone().multiplyScalar(-D2);
+  const n1xn2NonNormalized = new Vector3().crossVectors(n1, n2); // Need non-normalized version
+  const term1 = n2.clone().multiplyScalar(-D1); // -D1*N2
+  const term2 = n1.clone().multiplyScalar(-D2); // -D2*N1
   linePoint = new Vector3()
     .crossVectors(term1.sub(term2), n1xn2NonNormalized)
     .divideScalar(n1xn2MagSq);
@@ -602,7 +639,7 @@ const intersectThreePlanes = (
     plane3Obj.type !== "plane"
   )
     return null;
-
+  // Use the geometric parameters (N, D for N.X+D=0) for intersection calculation
   const p1Geom = getPlaneParamsIntersection(plane1Obj);
   const p2Geom = getPlaneParamsIntersection(plane2Obj);
   const p3Geom = getPlaneParamsIntersection(plane3Obj);
@@ -633,6 +670,10 @@ const intersectThreePlanes = (
   return { point: p, label: label };
 };
 
+/*************************
+ * Visualization Components
+ *************************/
+// --- Intersection Visuals ---
 const IntersectionPoint = ({
   position,
   label,
@@ -641,14 +682,16 @@ const IntersectionPoint = ({
   label: string;
 }) => (
   <group position={position}>
+    {" "}
     <mesh>
-      <sphereGeometry args={[0.04, 16, 16]} />
+      {" "}
+      <sphereGeometry args={[0.04, 16, 16]} />{" "}
       <meshStandardMaterial
         color="#ffff00"
         emissive="#ccaa00"
         emissiveIntensity={0.6}
-      />
-    </mesh>
+      />{" "}
+    </mesh>{" "}
     <Text
       position={[0, 0.06, 0]}
       fontSize={0.045}
@@ -658,8 +701,9 @@ const IntersectionPoint = ({
       outlineWidth={0.002}
       outlineColor="#000000"
     >
-      {label}
-    </Text>
+      {" "}
+      {label}{" "}
+    </Text>{" "}
   </group>
 );
 const IntersectionLine = ({ line, label }: { line: Line3; label: string }) => {
@@ -671,7 +715,12 @@ const IntersectionLine = ({ line, label }: { line: Line3; label: string }) => {
   }, [line]);
   return (
     <group>
-      <Line points={[line.start, line.end]} color="#ff00ff" lineWidth={4} />
+      {" "}
+      <Line
+        points={[line.start, line.end]}
+        color="#ff00ff"
+        lineWidth={4}
+      />{" "}
       <Text
         position={centerPoint.addScaledVector(lineDir, 0.1)}
         fontSize={0.045}
@@ -681,12 +730,13 @@ const IntersectionLine = ({ line, label }: { line: Line3; label: string }) => {
         outlineWidth={0.002}
         outlineColor="#000000"
       >
-        {label}
-      </Text>
+        {" "}
+        {label}{" "}
+      </Text>{" "}
     </group>
   );
 };
-
+// --- Core Objects ---
 const MathPlane = ({
   id,
   position,
@@ -737,6 +787,7 @@ const MathPlane = ({
   };
   return (
     <group position={position} rotation={rotation}>
+      {" "}
       <mesh
         ref={meshRef}
         onClick={handleSelect}
@@ -745,7 +796,8 @@ const MathPlane = ({
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerLeave}
       >
-        <planeGeometry args={isInRrefMode ? [4, 4] : [1, 1]} />
+        {" "}
+        <planeGeometry args={isInRrefMode ? [4, 4] : [1, 1]} />{" "}
         <meshStandardMaterial
           color={color}
           opacity={0.65}
@@ -753,8 +805,8 @@ const MathPlane = ({
           side={2}
           emissive={isSelected ? color : undefined}
           emissiveIntensity={0.3}
-        />
-      </mesh>
+        />{" "}
+      </mesh>{" "}
       <Text
         position={[0, 0, 0.05]}
         rotation={[-Math.PI / 2, 0, 0]}
@@ -763,18 +815,21 @@ const MathPlane = ({
         anchorX="center"
         anchorY="middle"
       >
-        {displayEquation || ""}
-      </Text>
+        {" "}
+        {displayEquation || ""}{" "}
+      </Text>{" "}
     </group>
   );
 };
-
+// --- Environment & UI ---
 const CoordinateSystem = () => (
   <group>
+    {" "}
     <mesh position={[0, 0, 0]}>
-      <sphereGeometry args={[0.03]} />
-      <meshStandardMaterial color="#ffffff" />
-    </mesh>
+      {" "}
+      <sphereGeometry args={[0.03]} />{" "}
+      <meshStandardMaterial color="#ffffff" />{" "}
+    </mesh>{" "}
     <Line
       points={[
         [0, 0, 0],
@@ -782,10 +837,10 @@ const CoordinateSystem = () => (
       ]}
       color="red"
       lineWidth={2}
-    />
+    />{" "}
     <Text position={[1.1, 0, 0]} fontSize={0.05} color="red">
       X
-    </Text>
+    </Text>{" "}
     <Line
       points={[
         [0, 0, 0],
@@ -793,10 +848,10 @@ const CoordinateSystem = () => (
       ]}
       color="green"
       lineWidth={2}
-    />
+    />{" "}
     <Text position={[0, 1.1, 0]} fontSize={0.05} color="green">
       Y
-    </Text>
+    </Text>{" "}
     <Line
       points={[
         [0, 0, 0],
@@ -804,14 +859,13 @@ const CoordinateSystem = () => (
       ]}
       color="blue"
       lineWidth={2}
-    />
+    />{" "}
     <Text position={[0, 0, 1.1]} fontSize={0.05} color="blue">
       Z
-    </Text>
-    <gridHelper args={[4, 20, "#555", "#333"]} position={[0, -0.01, 0]} />
+    </Text>{" "}
+    <gridHelper args={[4, 20, "#555", "#333"]} position={[0, -0.01, 0]} />{" "}
   </group>
 );
-
 const PanelButton = ({
   label,
   position,
@@ -832,16 +886,19 @@ const PanelButton = ({
   disabled?: boolean;
 }) => (
   <Interactive onSelect={disabled ? () => {} : onSelect}>
+    {" "}
     <group position={position}>
+      {" "}
       <mesh>
-        <planeGeometry args={[width, height]} />
+        {" "}
+        <planeGeometry args={[width, height]} />{" "}
         <meshStandardMaterial
           color={disabled ? "#555" : color}
           transparent
           opacity={disabled ? 0.5 : 0.9}
           side={2}
-        />
-      </mesh>
+        />{" "}
+      </mesh>{" "}
       <Text
         position={[0, 0, 0.001]}
         fontSize={fontSize}
@@ -849,12 +906,12 @@ const PanelButton = ({
         anchorX="center"
         anchorY="middle"
       >
-        {label}
-      </Text>
-    </group>
+        {" "}
+        {label}{" "}
+      </Text>{" "}
+    </group>{" "}
   </Interactive>
 );
-
 const ValueAdjuster = ({
   label,
   value,
@@ -871,16 +928,20 @@ const ValueAdjuster = ({
   value: number;
   min: number;
   max: number;
-  onChange: (keyOrRow: any, valueOrCol: any, value?: any) => void;
+  onChange: (
+    keyOrRow: any,
+    valueOrCol: any,
+    value?: any
+  ) => void;
   yPos: number;
   isMatrixCell?: boolean;
   rowIndex?: number;
   colIndex?: number;
   paramKey?: keyof PlaneEqParams;
 }) => {
-  const buttonSize = 0.035;
+  const buttonSize = 0.04;
   const spacing = 0.01;
-  const buttonSpacing = 0.015;
+  const buttonSpacing = 0.02;
   const valueDisplayWidth = 0.06;
   const increment = 0.5;
   const handleDecrement = () => {
@@ -892,7 +953,7 @@ const ValueAdjuster = ({
     ) {
       onChange(rowIndex, colIndex, newValue);
     } else if (paramKey) {
-      onChange(paramKey, newValue);
+      onChange(paramKey as keyof PlaneEqParams, newValue);
     }
   };
   const handleIncrement = () => {
@@ -904,24 +965,26 @@ const ValueAdjuster = ({
     ) {
       onChange(rowIndex, colIndex, newValue);
     } else if (paramKey) {
-      onChange(paramKey, newValue);
+      onChange(paramKey as keyof PlaneEqParams, newValue);
     }
   };
   const formatDisplayValue = (val: number) => val.toFixed(1).replace(".0", "");
-  const buttonOffsetX = valueDisplayWidth / 2 + buttonSpacing;
+  const buttonOffsetX = valueDisplayWidth / 2 + buttonSpacing + buttonSize / 2;
   return (
     <group position={[0, yPos, 0.01]}>
+      {" "}
       {label && (
         <Text
-          position={[-buttonOffsetX - buttonSize / 2 - spacing, 0, 0]}
+          position={[-buttonOffsetX - spacing, 0, 0]}
           fontSize={0.018}
           color="white"
           anchorX="right"
           anchorY="middle"
         >
-          {label}:
+          {" "}
+          {label}:{" "}
         </Text>
-      )}
+      )}{" "}
       <Text
         position={[0, 0, 0]}
         fontSize={0.02}
@@ -930,13 +993,16 @@ const ValueAdjuster = ({
         anchorY="middle"
         maxWidth={valueDisplayWidth}
       >
-        {formatDisplayValue(value)}
-      </Text>
+        {" "}
+        {formatDisplayValue(value)}{" "}
+      </Text>{" "}
       <Interactive onSelect={handleDecrement}>
+        {" "}
         <mesh position={[-buttonOffsetX, 0, 0]}>
-          <planeGeometry args={[buttonSize, buttonSize]} />
-          <meshStandardMaterial color="#b55" side={2} />
-        </mesh>
+          {" "}
+          <planeGeometry args={[buttonSize, buttonSize]} />{" "}
+          <meshStandardMaterial color="#b55" side={2} />{" "}
+        </mesh>{" "}
         <Text
           position={[-buttonOffsetX, 0, 0.001]}
           fontSize={0.025}
@@ -944,14 +1010,17 @@ const ValueAdjuster = ({
           anchorX="center"
           anchorY="middle"
         >
-          -
-        </Text>
-      </Interactive>
+          {" "}
+          -{" "}
+        </Text>{" "}
+      </Interactive>{" "}
       <Interactive onSelect={handleIncrement}>
+        {" "}
         <mesh position={[buttonOffsetX, 0, 0]}>
-          <planeGeometry args={[buttonSize, buttonSize]} />
-          <meshStandardMaterial color="#5b5" side={2} />
-        </mesh>
+          {" "}
+          <planeGeometry args={[buttonSize, buttonSize]} />{" "}
+          <meshStandardMaterial color="#5b5" side={2} />{" "}
+        </mesh>{" "}
         <Text
           position={[buttonOffsetX, 0, 0.001]}
           fontSize={0.025}
@@ -959,13 +1028,14 @@ const ValueAdjuster = ({
           anchorX="center"
           anchorY="middle"
         >
-          +
-        </Text>
-      </Interactive>
+          {" "}
+          +{" "}
+        </Text>{" "}
+      </Interactive>{" "}
     </group>
   );
 };
-
+// --- Control Panels ---
 const ControlPanel = () => {
   const { selectedObjectId, addPlane, removeObject, clearAll, setMode } =
     useLinePlaneStore();
@@ -979,15 +1049,17 @@ const ControlPanel = () => {
   };
   return (
     <group position={panelPosition} rotation={panelRotation}>
+      {" "}
       <mesh>
-        <planeGeometry args={[0.4, 0.4]} />
+        {" "}
+        <planeGeometry args={[0.4, 0.4]} />{" "}
         <meshStandardMaterial
           color="#22224a"
           transparent
           opacity={0.8}
           side={2}
-        />
-      </mesh>
+        />{" "}
+      </mesh>{" "}
       <Text
         position={[0, 0.17, 0.01]}
         fontSize={0.025}
@@ -995,13 +1067,14 @@ const ControlPanel = () => {
         anchorX="center"
         anchorY="middle"
       >
-        Controls
-      </Text>
+        {" "}
+        Controls{" "}
+      </Text>{" "}
       <PanelButton
         label="Add Random Plane"
         position={[0, 0.1, 0.01]}
         onSelect={() => addPlane()}
-      />
+      />{" "}
       {selectedObjectId && (
         <PanelButton
           label="Delete Selected"
@@ -1009,31 +1082,30 @@ const ControlPanel = () => {
           onSelect={() => removeObject(selectedObjectId)}
           color="#a44"
         />
-      )}
+      )}{" "}
       <PanelButton
         label="Clear All"
         position={[0, 0.0, 0.01]}
         onSelect={handleClearAll}
         color="#6f2ca5"
-      />
+      />{" "}
       <PanelButton
         label="Define Plane Eq"
         position={[0, -0.05, 0.01]}
         onSelect={() => setMode("equation")}
         color="#276"
         width={0.35}
-      />
+      />{" "}
       <PanelButton
         label="Setup RREF"
         position={[0, -0.12, 0.01]}
         onSelect={handleSetupRref}
         color="#088"
         width={0.35}
-      />
+      />{" "}
     </group>
   );
 };
-
 const EquationPanel = () => {
   const { planeParams, setPlaneParam, spawnFromEquation, setMode } =
     useLinePlaneStore();
@@ -1041,15 +1113,17 @@ const EquationPanel = () => {
   const panelRotation = useMemo(() => new Euler(0, 0, 0), []);
   return (
     <group position={panelPosition} rotation={panelRotation}>
+      {" "}
       <mesh>
-        <planeGeometry args={[0.45, 0.45]} />
+        {" "}
+        <planeGeometry args={[0.45, 0.45]} />{" "}
         <meshStandardMaterial
           color="#2a224a"
           transparent
           opacity={0.85}
           side={2}
-        />
-      </mesh>
+        />{" "}
+      </mesh>{" "}
       <Text
         position={[0, 0.19, 0.01]}
         fontSize={0.025}
@@ -1057,44 +1131,46 @@ const EquationPanel = () => {
         anchorX="center"
         anchorY="middle"
       >
-        Define Plane Equation
-      </Text>
+        {" "}
+        Define Plane Equation{" "}
+      </Text>{" "}
       <>
+        {" "}
         <Text
           position={[-0.2, 0.13, 0.01]}
           fontSize={0.018}
           color="salmon"
           anchorX="left"
         >
-          Coefficients (a, b, c)
-        </Text>
+          Normal (a, b, c)
+        </Text>{" "}
         <ValueAdjuster
-          label="a "
+          label="a (nX)"
           value={planeParams.paramA}
           min={-10}
           max={10}
           onChange={setPlaneParam}
           paramKey="paramA"
           yPos={0.09}
-        />
+        />{" "}
         <ValueAdjuster
-          label="b "
+          label="b (nY)"
           value={planeParams.paramB}
           min={-10}
           max={10}
           onChange={setPlaneParam}
           paramKey="paramB"
           yPos={0.04}
-        />
+        />{" "}
         <ValueAdjuster
-          label="c "
+          label="c (nZ)"
           value={planeParams.paramC}
           min={-10}
           max={10}
           onChange={setPlaneParam}
           paramKey="paramC"
           yPos={-0.01}
-        />
+        />{" "}
         <Text
           position={[-0.2, -0.06, 0.01]}
           fontSize={0.018}
@@ -1102,7 +1178,7 @@ const EquationPanel = () => {
           anchorX="left"
         >
           Constant d (ax+by+cz=d)
-        </Text>
+        </Text>{" "}
         <ValueAdjuster
           label="d"
           value={planeParams.paramD}
@@ -1111,26 +1187,26 @@ const EquationPanel = () => {
           onChange={setPlaneParam}
           paramKey="paramD"
           yPos={-0.1}
-        />
-      </>
+        />{" "}
+      </>{" "}
       <PanelButton
         label="Spawn Plane"
         position={[0, -0.16, 0.01]}
         onSelect={spawnFromEquation}
         color="#2a5"
         width={0.25}
-      />
+      />{" "}
       <PanelButton
         label="Back to Controls"
         position={[0, -0.21, 0.01]}
         onSelect={() => setMode("random")}
         color="#777"
         width={0.25}
-      />
+      />{" "}
     </group>
   );
 };
-
+// --- RREF Panel ---
 const RrefPanel = () => {
   const {
     initialRrefMatrix,
@@ -1148,7 +1224,7 @@ const RrefPanel = () => {
   const panelRotation = useMemo(() => new Euler(0, 0, 0), []);
   const cellWidth = 0.15;
   const cellHeight = 0.06;
-  const cellPadding = 0.03;
+  const cellPadding = 0.03; // Increased padding
   const matrixToDisplay =
     rrefState === "editing"
       ? initialRrefMatrix
@@ -1158,7 +1234,8 @@ const RrefPanel = () => {
   if (!matrixToDisplay) {
     return (
       <group position={panelPosition} rotation={panelRotation}>
-        <Text color="orange">RREF data loading...</Text>
+        {" "}
+        <Text color="orange">RREF data loading...</Text>{" "}
       </group>
     );
   }
@@ -1167,8 +1244,8 @@ const RrefPanel = () => {
   const matrixWidth =
     numCols * cellWidth + (numCols > 0 ? (numCols - 1) * cellPadding : 0);
   const matrixOriginX = -matrixWidth / 2;
-  const matrixOriginY = 0.2;
-  const panelWidth = Math.max(0.7, matrixWidth + 0.2);
+  const matrixOriginY = 0.2; // Start matrix higher
+  const panelWidth = Math.max(0.7, matrixWidth + 0.2); // Wider panel margin
   const panelHeight = 0.85;
   const formatNumberDisplay = (num: number) => {
     if (Math.abs(num) < EPSILON) return "0";
@@ -1182,18 +1259,20 @@ const RrefPanel = () => {
   const buttonsY = matrixOriginY - numRows * (cellHeight + cellPadding) - 0.05;
   const analysisY = buttonsY - 0.08;
   const bottomButtonsY =
-    analysisY - (isViewingLastStep && rrefAnalysis ? 0.1 : 0.0);
+    analysisY - (isViewingLastStep && rrefAnalysis ? 0.1 : 0.0); // Adjust based on analysis height
   return (
     <group position={panelPosition} rotation={panelRotation}>
+      {" "}
       <mesh>
-        <planeGeometry args={[panelWidth, panelHeight]} />
+        {" "}
+        <planeGeometry args={[panelWidth, panelHeight]} />{" "}
         <meshStandardMaterial
           color="#1a3a3a"
           transparent
           opacity={0.9}
           side={2}
-        />
-      </mesh>
+        />{" "}
+      </mesh>{" "}
       <Text
         position={[0, panelHeight / 2 - 0.04, 0.01]}
         fontSize={0.025}
@@ -1201,10 +1280,11 @@ const RrefPanel = () => {
         anchorX="center"
         anchorY="middle"
       >
+        {" "}
         {rrefState === "editing"
           ? "Edit Initial Matrix"
-          : "Row Reduction Steps"}
-      </Text>
+          : "Row Reduction Steps"}{" "}
+      </Text>{" "}
       {rrefState === "viewing" && (
         <Text
           position={[0, panelHeight / 2 - 0.08, 0.01]}
@@ -1212,20 +1292,24 @@ const RrefPanel = () => {
           color="cyan"
           anchorX="center"
         >
-          Step {rrefStepIndex + 1} / {rrefHistory.length}
+          {" "}
+          Step {rrefStepIndex + 1} / {rrefHistory.length}{" "}
         </Text>
-      )}
+      )}{" "}
       <group position={[matrixOriginX, matrixOriginY, 0.01]}>
+        {" "}
         {matrixToDisplay.map((row, r) => (
           <group
             key={`row-${r}`}
             position={[0, -r * (cellHeight + cellPadding), 0]}
           >
+            {" "}
             {row.map((cell, c) => (
               <group
                 key={`cell-${r}-${c}`}
                 position={[c * (cellWidth + cellPadding), 0, 0]}
               >
+                {" "}
                 {rrefState === "editing" ? (
                   <ValueAdjuster
                     value={cell}
@@ -1239,10 +1323,12 @@ const RrefPanel = () => {
                   />
                 ) : (
                   <>
+                    {" "}
                     <mesh>
-                      <planeGeometry args={[cellWidth, cellHeight]} />
-                      <meshStandardMaterial color="#334444" />
-                    </mesh>
+                      {" "}
+                      <planeGeometry args={[cellWidth, cellHeight]} />{" "}
+                      <meshStandardMaterial color="#334444" />{" "}
+                    </mesh>{" "}
                     <Text
                       position={[0, 0, 0.001]}
                       fontSize={0.02}
@@ -1250,18 +1336,21 @@ const RrefPanel = () => {
                       anchorX="center"
                       anchorY="middle"
                     >
-                      {formatNumberDisplay(cell)}
-                    </Text>
+                      {" "}
+                      {formatNumberDisplay(cell)}{" "}
+                    </Text>{" "}
                   </>
-                )}
+                )}{" "}
               </group>
-            ))}
+            ))}{" "}
           </group>
-        ))}
-      </group>
+        ))}{" "}
+      </group>{" "}
       <group position={[0, buttonsY, 0.01]}>
+        {" "}
         {rrefState === "editing" ? (
           <>
+            {" "}
             <PanelButton
               label="Calculate RREF Steps"
               position={[0, 0, 0]}
@@ -1270,18 +1359,20 @@ const RrefPanel = () => {
               fontSize={0.018}
               color={"#4a4"}
               onSelect={calculateAndStartRrefViewing}
-            />
+            />{" "}
             <PanelButton
               label="Back to Controls"
               position={[0, -0.06, 0]}
               width={0.3}
               onSelect={() => setMode("random")}
               color="#777"
-            />
+            />{" "}
           </>
         ) : (
           <>
+            {" "}
             <group position={[0, 0, 0]}>
+              {" "}
               <PanelButton
                 label="< Prev Step"
                 position={[-0.15, 0, 0]}
@@ -1291,7 +1382,7 @@ const RrefPanel = () => {
                 color={"#aaa"}
                 onSelect={() => stepRrefHistory("back")}
                 disabled={rrefStepIndex <= 0}
-              />
+              />{" "}
               <PanelButton
                 label="Next Step >"
                 position={[0.15, 0, 0]}
@@ -1301,10 +1392,11 @@ const RrefPanel = () => {
                 color={"#aaa"}
                 onSelect={() => stepRrefHistory("forward")}
                 disabled={rrefStepIndex >= rrefHistory.length - 1}
-              />
-            </group>
+              />{" "}
+            </group>{" "}
             {isViewingLastStep && rrefAnalysis && (
               <group position={[0, -0.06, 0]}>
+                {" "}
                 <Text
                   fontSize={0.018}
                   color={
@@ -1315,10 +1407,11 @@ const RrefPanel = () => {
                   anchorX="center"
                   position={[0, 0, 0.01]}
                 >
+                  {" "}
                   {rrefAnalysis.consistency === "inconsistent"
                     ? "System Inconsistent"
-                    : "System Consistent"}
-                </Text>
+                    : "System Consistent"}{" "}
+                </Text>{" "}
                 <Text
                   fontSize={0.016}
                   color="white"
@@ -1326,11 +1419,13 @@ const RrefPanel = () => {
                   position={[0, -0.025, 0.01]}
                   maxWidth={panelWidth * 0.9}
                 >
-                  {rrefAnalysis.solutionString}
-                </Text>
+                  {" "}
+                  {rrefAnalysis.solutionString}{" "}
+                </Text>{" "}
               </group>
-            )}
+            )}{" "}
             <group position={[0, bottomButtonsY, 0.01]}>
+              {" "}
               <PanelButton
                 label="Reset / Edit Initial"
                 position={[0, 0, 0]}
@@ -1339,22 +1434,25 @@ const RrefPanel = () => {
                 fontSize={0.015}
                 color={"#f88"}
                 onSelect={resetRrefToEditing}
-              />
+              />{" "}
               <PanelButton
                 label="Back to Controls"
                 position={[0, -0.05, 0]}
                 width={0.3}
                 onSelect={() => setMode("random")}
                 color="#777"
-              />
-            </group>
+              />{" "}
+            </group>{" "}
           </>
-        )}
-      </group>
+        )}{" "}
+      </group>{" "}
     </group>
   );
 };
 
+/*************************
+ * 4. Main AR Scene Component
+ *************************/
 export const ARScene = () => {
   const {
     objects,
@@ -1368,6 +1466,7 @@ export const ARScene = () => {
     rrefUniqueSolutionPoint,
   } = useLinePlaneStore();
 
+  // Use a ref to track if initial seeding occurred to prevent re-seeding on mode change
   const didSeedRef = useRef(false);
   useEffect(() => {
     if (
@@ -1376,12 +1475,15 @@ export const ARScene = () => {
       useLinePlaneStore.getState().objects.length === 0
     ) {
       useLinePlaneStore.getState().addPlane();
-      didSeedRef.current = true;
+      didSeedRef.current = true; // Mark as seeded
     }
+    // Reset seed flag if leaving RREF mode? Or rely on setMode clearing objects?
+    // Let's rely on setMode clearing objects for now.
   }, [mode]);
 
   const rrefScale = 1 / 3;
 
+  // Calculate dynamic plane data for RREF mode based on state
   const rrefPlaneData = useMemo(() => {
     if (mode !== "rref") return [];
     const matrixToVisualize =
@@ -1397,7 +1499,7 @@ export const ARScene = () => {
         const transform = getPlaneTransformFromRow(row);
         if (transform) {
           const formatNum = (n: number) => n.toFixed(1).replace(".0", "");
-
+          // Display equation in ax+by+cz=d format directly from the row
           const eqStr = `${formatNum(row[0])}x + ${formatNum(row[1])}y + ${formatNum(row[2])}z = ${formatNum(row[3])}`;
           return {
             id: `rref-plane-${index}-${rrefStepIndex}`,
@@ -1421,6 +1523,7 @@ export const ARScene = () => {
     return planeData;
   }, [mode, rrefState, initialRrefMatrix, rrefHistory, rrefStepIndex]);
 
+  // Calculate Intersections based on current mode/data
   const intersections = useMemo(() => {
     type IntersectionResult = {
       id: string;
@@ -1431,6 +1534,7 @@ export const ARScene = () => {
     };
     const results: IntersectionResult[] = [];
 
+    // Determine the list of planes to work with based on mode
     const activePlanes =
       mode === "rref"
         ? rrefPlaneData
@@ -1446,6 +1550,7 @@ export const ARScene = () => {
             }))
         : objects.filter((o) => o.visible && o.type === "plane");
 
+    // Calculate PAIRWISE Plane-Plane Intersections (Lines)
     for (let i = 0; i < activePlanes.length; i++) {
       for (let j = i + 1; j < activePlanes.length; j++) {
         const obj1 = activePlanes[i];
@@ -1462,7 +1567,7 @@ export const ARScene = () => {
         }
       }
     }
-
+    // Calculate UNIQUE Three-Plane Intersection (Point)
     if (activePlanes.length >= 3) {
       for (let i = 0; i < activePlanes.length; i++) {
         for (let j = i + 1; j < activePlanes.length; j++) {
@@ -1485,7 +1590,7 @@ export const ARScene = () => {
         }
       }
     }
-
+    // Add RREF Unique Solution Point (only in RREF mode)
     if (
       mode === "rref" &&
       rrefAnalysis?.solutionType === "unique" &&
@@ -1495,7 +1600,7 @@ export const ARScene = () => {
         (r) =>
           r.isSolutionPoint &&
           (r.data as Vector3).distanceToSquared(rrefUniqueSolutionPoint) <
-            EPSILON
+            SQ_EPSILON
       );
       if (!alreadyFound) {
         results.push({
@@ -1519,6 +1624,7 @@ export const ARScene = () => {
 
       {mode === "rref" ? (
         <>
+          {/* RREF Visualization Group with Scaling */}
           <group scale={[rrefScale, rrefScale, rrefScale]}>
             {rrefPlaneData.map(
               (plane) =>
@@ -1534,6 +1640,7 @@ export const ARScene = () => {
                   />
                 )
             )}
+            {/* Render Intersections - Always show lines and points */}
             {intersections
               .filter((i) => i.type === "line")
               .map((intersection) => (
@@ -1553,10 +1660,12 @@ export const ARScene = () => {
                 />
               ))}
           </group>
+          {/* RREF Panel (Not Scaled) */}
           <RrefPanel />
         </>
       ) : (
         <>
+          {/* Render only Math Planes from store */}
           {objects.map(
             (object) =>
               object.visible &&
@@ -1571,6 +1680,7 @@ export const ARScene = () => {
                 />
               )
           )}
+          {/* Render only Plane-Plane intersections & 3-Plane Points */}
           {intersections
             .filter((i) => i.type === "line")
             .map((intersection) => (
@@ -1589,6 +1699,7 @@ export const ARScene = () => {
                 label={intersection.label}
               />
             ))}
+          {/* Render appropriate Control Panel */}
           {mode === "random" ? <ControlPanel /> : <EquationPanel />}
         </>
       )}
