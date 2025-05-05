@@ -19,10 +19,10 @@ interface MathObject {
 }
 
 interface PlaneEqParams {
-  nX: number;
-  nY: number;
-  nZ: number;
-  d: number;
+  paramA: number;
+  paramB: number;
+  paramC: number;
+  paramD: number;
 }
 
 type Matrix = number[][];
@@ -48,7 +48,11 @@ interface LinePlaneStoreState {
   rrefAnalysis: RrefAnalysisResult | null;
   rrefUniqueSolutionPoint: Vector3 | null;
 
-  addPlane: (position?: Vector3, rotation?: Euler) => void;
+  addPlane: (
+    position?: Vector3,
+    rotation?: Euler,
+    params?: PlaneEqParams
+  ) => void;
   removeObject: (id: string) => void;
   updateObjectPosition: (id: string, position: Vector3) => void;
   updateEquation: (id: string) => void;
@@ -64,7 +68,12 @@ interface LinePlaneStoreState {
   stepRrefHistory: (direction: "back" | "forward") => void;
 }
 
-const defaultPlaneParams: PlaneEqParams = { nX: 0, nY: 1, nZ: 0, d: -1 };
+const defaultPlaneParams: PlaneEqParams = {
+  paramA: 0,
+  paramB: 1,
+  paramC: 0,
+  paramD: 1,
+};
 
 const sampleMatrix: Matrix = [
   [1, 2, -1, 3],
@@ -78,13 +87,25 @@ const deepCopyMatrix = (matrix: Matrix): Matrix =>
 const getPlaneTransform = (
   params: PlaneEqParams
 ): { position: Vector3; rotation: Euler } => {
-  const normal = new Vector3(params.nX, params.nY, params.nZ);
-  if (normal.lengthSq() < SQ_EPSILON) normal.set(0, 1, 0);
-  normal.normalize();
-  const position = normal.clone().multiplyScalar(-params.d);
+  const normal = new Vector3(params.paramA, params.paramB, params.paramC);
+  const d_rhs = params.paramD;
+  const normalLenSq = normal.lengthSq();
+
+  if (normalLenSq < SQ_EPSILON) {
+    console.warn(
+      "Degenerate plane definition (zero normal). Positioning arbitrarily."
+    );
+
+    return { position: new Vector3(0, -999 + d_rhs, 0), rotation: new Euler() };
+  }
+
+  const normalNormalized = normal.clone().normalize();
+
+  const position = normal.clone().multiplyScalar(d_rhs / normalLenSq);
+
   const quaternion = new Quaternion().setFromUnitVectors(
     new Vector3(0, 0, 1),
-    normal
+    normalNormalized
   );
   const rotation = new Euler().setFromQuaternion(quaternion);
   return { position, rotation };
@@ -100,6 +121,7 @@ const getPlaneTransformFromRow = (
   const d_rhs = row[3];
   const normal = new Vector3(a, b, c);
   const normalLenSq = normal.lengthSq();
+
   if (normalLenSq < SQ_EPSILON) {
     const isValid = Math.abs(d_rhs) < EPSILON;
     return {
@@ -108,12 +130,13 @@ const getPlaneTransformFromRow = (
       isValid: isValid,
     };
   }
-  normal.normalize();
-  const D = -d_rhs;
-  const position = normal.clone().multiplyScalar(-D);
+
+  const normalNormalized = normal.clone().normalize();
+
+  const position = normal.clone().multiplyScalar(d_rhs / normalLenSq);
   const quaternion = new Quaternion().setFromUnitVectors(
     new Vector3(0, 0, 1),
-    normal
+    normalNormalized
   );
   const rotation = new Euler().setFromQuaternion(quaternion);
   return { position, rotation, isValid: true };
@@ -339,36 +362,49 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
   rrefAnalysis: null,
   rrefUniqueSolutionPoint: null,
 
-  addPlane: (position?: Vector3, rotation?: Euler) => {
-    if (!position) {
-      position = new Vector3(
+  addPlane: (position?: Vector3, rotation?: Euler, params?: PlaneEqParams) => {
+    let pos = position;
+    let rot = rotation;
+    let eq = "";
+
+    if (params) {
+      const transform = getPlaneTransform(params);
+      pos = transform.position;
+      rot = transform.rotation;
+
+      const formatNum = (n: number) => n.toFixed(1).replace(".0", "");
+      eq = `${formatNum(params.paramA)}x + ${formatNum(params.paramB)}y + ${formatNum(params.paramC)}z = ${formatNum(params.paramD)}`;
+    } else {
+      pos ||= new Vector3(
         Math.random() * 2 - 1,
         Math.random() * 1.5,
         Math.random() * 2 - 1
       );
-    }
-    if (!rotation) {
-      rotation = new Euler(
+      rot ||= new Euler(
         Math.random() * Math.PI * 2,
         Math.random() * Math.PI * 2,
         Math.random() * Math.PI * 2
       );
     }
+
     const id = generateUUID();
-    const plane = {
+    const plane: MathObject = {
       id,
-      type: "plane" as const,
-      position: position.clone(),
-      rotation: rotation.clone(),
+      type: "plane",
+      position: pos.clone(),
+      rotation: rot.clone(),
       color: `hsl(${Math.floor(Math.random() * 360)}, 70%, 50%)`,
-      equation: "",
+      equation: eq,
       visible: true,
     };
     set((state) => ({
       objects: [...state.objects, plane],
       selectedObjectId: id,
     }));
-    get().updateEquation(id);
+
+    if (!eq) {
+      get().updateEquation(id);
+    }
   },
   removeObject: (id) => {
     set((state) => ({
@@ -385,30 +421,34 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
     }));
     get().updateEquation(id);
   },
+
   updateEquation: (id) => {
     const object = get().objects.find((obj) => obj.id === id);
     if (!object || object.type !== "plane") return;
     let equation = "";
     const normal = new Vector3(0, 0, 1).applyEuler(object.rotation).normalize();
-    const d = -normal.dot(object.position);
+
+    const d_rhs = normal.dot(object.position);
+    const a = normal.x;
+    const b = normal.y;
+    const c = normal.z;
+
     const formatCoeff = (val: number, axis: string) => {
       if (Math.abs(val) < 0.01) return "";
-      const sign = val >= 0 ? "+" : "-";
+      const sign = val >= 0 ? "+ " : "- ";
       const num = Math.abs(val).toFixed(2);
       const numStr = num === "1.00" && axis ? "" : num;
-      return ` ${sign} ${numStr}${axis} `;
+      return `${sign}${numStr}${axis} `;
     };
-    const formatD = (val: number) => {
-      if (Math.abs(val) < 0.01) return " ";
-      const sign = val >= 0 ? "+" : "-";
-      const num = Math.abs(val).toFixed(2);
-      return ` ${sign} ${num} `;
-    };
+    const formatD = (val: number) => val.toFixed(2);
+
     let eq =
-      `${formatCoeff(normal.x, "x")}${formatCoeff(normal.y, "y")}${formatCoeff(normal.z, "z")}${formatD(d)}= 0`.trim();
+      `${formatCoeff(a, "x")}${formatCoeff(b, "y")}${formatCoeff(c, "z")}`.trim();
     if (eq.startsWith("+ ")) eq = eq.substring(2);
-    if (eq.startsWith("- ")) eq = "-" + eq.substring(2);
-    equation = eq || "0 = 0";
+    if (eq === "") eq = "0";
+
+    equation = `${eq} = ${formatD(d_rhs)}`;
+
     set((state) => ({
       objects: state.objects.map((obj) =>
         obj.id === id ? { ...obj, equation } : obj
@@ -446,8 +486,8 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
     set((s) => ({ planeParams: { ...s.planeParams, [param]: value } })),
   spawnFromEquation: () => {
     const { planeParams, addPlane } = get();
-    const { position, rotation } = getPlaneTransform(planeParams);
-    addPlane(position, rotation);
+
+    addPlane(undefined, undefined, planeParams);
   },
 
   updateInitialRrefCell: (row, col, value) => {
@@ -499,37 +539,40 @@ export const useLinePlaneStore = create<LinePlaneStoreState>((set, get) => ({
   },
 }));
 
-const getPlaneParams = (
+const getPlaneParamsIntersection = (
   planeObj: MathObject
-): { normal: Vector3; d: number } | null => {
+): { normal: Vector3; constantD: number } | null => {
   if (planeObj.type !== "plane") return null;
   const normal = new Vector3(0, 0, 1).applyEuler(planeObj.rotation).normalize();
-  const d = -normal.dot(planeObj.position);
-  return { normal, d };
+  const D = -normal.dot(planeObj.position);
+  return { normal, constantD: D };
 };
+
 const intersectPlanePlane = (
   plane1Obj: MathObject,
   plane2Obj: MathObject
 ): { line: Line3; label: string } | null => {
   if (plane1Obj.type !== "plane" || plane2Obj.type !== "plane") return null;
-  const p1 = getPlaneParams(plane1Obj);
-  const p2 = getPlaneParams(plane2Obj);
-  if (!p1 || !p2) return null;
-  const n1 = p1.normal;
-  const d1 = p1.d;
-  const n2 = p2.normal;
-  const d2 = p2.d;
+
+  const p1Geom = getPlaneParamsIntersection(plane1Obj);
+  const p2Geom = getPlaneParamsIntersection(plane2Obj);
+  if (!p1Geom || !p2Geom) return null;
+  const n1 = p1Geom.normal;
+  const D1 = p1Geom.constantD;
+  const n2 = p2Geom.normal;
+  const D2 = p2Geom.constantD;
+
   const lineDirection = new Vector3().crossVectors(n1, n2);
   const n1xn2MagSq = lineDirection.lengthSq();
   if (n1xn2MagSq < SQ_EPSILON) {
     return null;
   }
   lineDirection.normalize();
-  let linePoint: Vector3 | null = null;
 
-  const term1 = n2.clone().multiplyScalar(-d1);
-  const term2 = n1.clone().multiplyScalar(-d2);
+  let linePoint: Vector3 | null = null;
   const n1xn2NonNormalized = new Vector3().crossVectors(n1, n2);
+  const term1 = n2.clone().multiplyScalar(-D1);
+  const term2 = n1.clone().multiplyScalar(-D2);
   linePoint = new Vector3()
     .crossVectors(term1.sub(term2), n1xn2NonNormalized)
     .divideScalar(n1xn2MagSq);
@@ -560,16 +603,17 @@ const intersectThreePlanes = (
     plane3Obj.type !== "plane"
   )
     return null;
-  const p1 = getPlaneParams(plane1Obj);
-  const p2 = getPlaneParams(plane2Obj);
-  const p3 = getPlaneParams(plane3Obj);
-  if (!p1 || !p2 || !p3) return null;
-  const n1 = p1.normal;
-  const d1 = p1.d;
-  const n2 = p2.normal;
-  const d2 = p2.d;
-  const n3 = p3.normal;
-  const d3 = p3.d;
+
+  const p1Geom = getPlaneParamsIntersection(plane1Obj);
+  const p2Geom = getPlaneParamsIntersection(plane2Obj);
+  const p3Geom = getPlaneParamsIntersection(plane3Obj);
+  if (!p1Geom || !p2Geom || !p3Geom) return null;
+  const n1 = p1Geom.normal;
+  const D1 = p1Geom.constantD;
+  const n2 = p2Geom.normal;
+  const D2 = p2Geom.constantD;
+  const n3 = p3Geom.normal;
+  const D3 = p3Geom.constantD;
   const det = n1.dot(new Vector3().crossVectors(n2, n3));
   if (Math.abs(det) < EPSILON) {
     return null;
@@ -577,9 +621,9 @@ const intersectThreePlanes = (
   const n2xn3 = new Vector3().crossVectors(n2, n3);
   const n3xn1 = new Vector3().crossVectors(n3, n1);
   const n1xn2 = new Vector3().crossVectors(n1, n2);
-  const term1 = n2xn3.multiplyScalar(-d1);
-  const term2 = n3xn1.multiplyScalar(-d2);
-  const term3 = n1xn2.multiplyScalar(-d3);
+  const term1 = n2xn3.multiplyScalar(-D1);
+  const term2 = n3xn1.multiplyScalar(-D2);
+  const term3 = n1xn2.multiplyScalar(-D3);
   const intersectionPoint = new Vector3()
     .add(term1)
     .add(term2)
@@ -1023,33 +1067,33 @@ const EquationPanel = () => {
           color="salmon"
           anchorX="left"
         >
-          Normal (nX, nY, nZ)
+          Coefficients (a, b, c)
         </Text>
         <ValueAdjuster
-          label="nX"
-          value={planeParams.nX}
+          label="a "
+          value={planeParams.paramA}
           min={-10}
           max={10}
           onChange={setPlaneParam}
-          paramKey="nX"
+          paramKey="paramA"
           yPos={0.09}
         />
         <ValueAdjuster
-          label="nY"
-          value={planeParams.nY}
+          label="b "
+          value={planeParams.paramB}
           min={-10}
           max={10}
           onChange={setPlaneParam}
-          paramKey="nY"
+          paramKey="paramB"
           yPos={0.04}
         />
         <ValueAdjuster
-          label="nZ"
-          value={planeParams.nZ}
+          label="c "
+          value={planeParams.paramC}
           min={-10}
           max={10}
           onChange={setPlaneParam}
-          paramKey="nZ"
+          paramKey="paramC"
           yPos={-0.01}
         />
         <Text
@@ -1058,15 +1102,15 @@ const EquationPanel = () => {
           color="gold"
           anchorX="left"
         >
-          Constant (d)
+          Constant d (ax+by+cz=d)
         </Text>
         <ValueAdjuster
           label="d"
-          value={planeParams.d}
+          value={planeParams.paramD}
           min={-10}
           max={10}
           onChange={setPlaneParam}
-          paramKey="d"
+          paramKey="paramD"
           yPos={-0.1}
         />
       </>
@@ -1103,9 +1147,9 @@ const RrefPanel = () => {
   } = useLinePlaneStore();
   const panelPosition = useMemo(() => new Vector3(0, 1.2, -1.0), []);
   const panelRotation = useMemo(() => new Euler(0, 0, 0), []);
-  const cellWidth = 0.13;
+  const cellWidth = 0.15;
   const cellHeight = 0.06;
-  const cellPadding = 0.02;
+  const cellPadding = 0.03;
   const matrixToDisplay =
     rrefState === "editing"
       ? initialRrefMatrix
@@ -1124,9 +1168,9 @@ const RrefPanel = () => {
   const matrixWidth =
     numCols * cellWidth + (numCols > 0 ? (numCols - 1) * cellPadding : 0);
   const matrixOriginX = -matrixWidth / 2;
-  const matrixOriginY = 0.18;
-  const panelWidth = Math.max(0.65, matrixWidth + 0.15);
-  const panelHeight = 0.8;
+  const matrixOriginY = 0.2;
+  const panelWidth = Math.max(0.7, matrixWidth + 0.2);
+  const panelHeight = 0.85;
   const formatNumberDisplay = (num: number) => {
     if (Math.abs(num) < EPSILON) return "0";
     return num
@@ -1136,6 +1180,10 @@ const RrefPanel = () => {
   };
   const isViewingLastStep =
     rrefState === "viewing" && rrefStepIndex === rrefHistory.length - 1;
+  const buttonsY = matrixOriginY - numRows * (cellHeight + cellPadding) - 0.05;
+  const analysisY = buttonsY - 0.08;
+  const bottomButtonsY =
+    analysisY - (isViewingLastStep && rrefAnalysis ? 0.1 : 0.0);
   return (
     <group position={panelPosition} rotation={panelRotation}>
       <mesh>
@@ -1212,13 +1260,7 @@ const RrefPanel = () => {
           </group>
         ))}
       </group>
-      <group
-        position={[
-          0,
-          matrixOriginY - numRows * (cellHeight + cellPadding) - 0.08,
-          0.01,
-        ]}
-      >
+      <group position={[0, buttonsY, 0.01]}>
         {rrefState === "editing" ? (
           <>
             <PanelButton
@@ -1289,13 +1331,7 @@ const RrefPanel = () => {
                 </Text>
               </group>
             )}
-            <group
-              position={[
-                0,
-                isViewingLastStep && rrefAnalysis ? -0.13 : -0.06,
-                0,
-              ]}
-            >
+            <group position={[0, bottomButtonsY, 0.01]}>
               <PanelButton
                 label="Reset / Edit Initial"
                 position={[0, 0, 0]}
@@ -1333,9 +1369,15 @@ export const ARScene = () => {
     rrefUniqueSolutionPoint,
   } = useLinePlaneStore();
 
+  const didSeedRef = useRef(false);
   useEffect(() => {
-    if (mode !== "rref" && useLinePlaneStore.getState().objects.length === 0) {
+    if (
+      mode !== "rref" &&
+      !didSeedRef.current &&
+      useLinePlaneStore.getState().objects.length === 0
+    ) {
       useLinePlaneStore.getState().addPlane();
+      didSeedRef.current = true;
     }
   }, [mode]);
 
@@ -1356,6 +1398,7 @@ export const ARScene = () => {
         const transform = getPlaneTransformFromRow(row);
         if (transform) {
           const formatNum = (n: number) => n.toFixed(1).replace(".0", "");
+
           const eqStr = `${formatNum(row[0])}x + ${formatNum(row[1])}y + ${formatNum(row[2])}z = ${formatNum(row[3])}`;
           return {
             id: `rref-plane-${index}-${rrefStepIndex}`,
@@ -1389,7 +1432,6 @@ export const ARScene = () => {
     };
     const results: IntersectionResult[] = [];
 
-    // determine the list of planes to work with based on mode
     const activePlanes =
       mode === "rref"
         ? rrefPlaneData
@@ -1461,7 +1503,7 @@ export const ARScene = () => {
           id: "rref-solution-pt",
           type: "point",
           data: rrefUniqueSolutionPoint,
-          label: `(${rrefUniqueSolutionPoint.x.toFixed(2)}, ${rrefUniqueSolutionPoint.y.toFixed(2)}, ${rrefUniqueSolutionPoint.z.toFixed(2)})`, // Use RREF analysis point coords for label
+          label: `(${rrefUniqueSolutionPoint.x.toFixed(2)}, ${rrefUniqueSolutionPoint.y.toFixed(2)}, ${rrefUniqueSolutionPoint.z.toFixed(2)})`,
           isSolutionPoint: true,
         });
       }
@@ -1478,7 +1520,6 @@ export const ARScene = () => {
 
       {mode === "rref" ? (
         <>
-          {/* RREF Visualization Group */}
           <group scale={[rrefScale, rrefScale, rrefScale]}>
             {rrefPlaneData.map(
               (plane) =>
@@ -1494,7 +1535,6 @@ export const ARScene = () => {
                   />
                 )
             )}
-            {/* Render Intersections - Always show lines and points */}
             {intersections
               .filter((i) => i.type === "line")
               .map((intersection) => (
@@ -1518,7 +1558,6 @@ export const ARScene = () => {
         </>
       ) : (
         <>
-          {/* Render general Math Objects */}
           {objects.map(
             (object) =>
               object.visible &&
@@ -1533,7 +1572,6 @@ export const ARScene = () => {
                 />
               )
           )}
-          {/* Render general Intersections */}
           {intersections
             .filter((i) => i.type === "line")
             .map((intersection) => (
@@ -1552,7 +1590,6 @@ export const ARScene = () => {
                 label={intersection.label}
               />
             ))}
-          {/* Render appropriate Control Panel */}
           {mode === "random" ? <ControlPanel /> : <EquationPanel />}
         </>
       )}
